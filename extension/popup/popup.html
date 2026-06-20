@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>YouTube Sync</title>
+  <style>
+    :root {
+      --bg-color: #0b0f19;
+      --panel-bg: rgba(255, 255, 255, 0.05);
+      --border-color: rgba(255, 255, 255, 0.1);
+      --text-primary: #f3f4f6;
+      --text-secondary: #9ca3af;
+      --accent-color: #3b82f6;
+      --accent-hover: #2563eb;
+      --success-color: #10b981;
+      --danger-color: #ef4444;
+      --warning-color: #f59e0b;
+    }
+
+    body {
+      margin: 0;
+      padding: 16px;
+      width: 280px;
+      background-color: var(--bg-color);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: var(--text-primary);
+    }
+
+    .container {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 10px;
+    }
+
+    .title {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      margin: 0;
+      background: linear-gradient(to right, #60a5fa, #3b82f6);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 500;
+      padding: 4px 8px;
+      border-radius: 12px;
+      background: var(--panel-bg);
+      border: 1px solid var(--border-color);
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background-color: var(--danger-color);
+    }
+
+    .status-dot.connected {
+      background-color: var(--success-color);
+      box-shadow: 0 0 8px var(--success-color);
+    }
+
+    .status-dot.connecting {
+      background-color: var(--warning-color);
+      animation: pulse 1.5s infinite ease-in-out;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 1; }
+    }
+
+    .card {
+      background: var(--panel-bg);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 12px;
+    }
+
+    .section-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      margin-top: 0;
+      margin-bottom: 10px;
+      letter-spacing: 0.05em;
+    }
+
+    .role-selector {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .role-btn {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      padding: 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 13px;
+      transition: all 0.2s ease;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .role-btn:hover {
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text-primary);
+    }
+
+    .role-btn.active {
+      border-color: var(--accent-color);
+      background: rgba(59, 130, 246, 0.1);
+      color: var(--accent-color);
+      box-shadow: 0 0 12px rgba(59, 130, 246, 0.15);
+    }
+
+    .role-desc {
+      font-size: 10px;
+      font-weight: 400;
+      color: var(--text-secondary);
+      text-align: center;
+    }
+
+    .role-btn.active .role-desc {
+      color: rgba(59, 130, 246, 0.8);
+    }
+
+    .footer {
+      font-size: 10px;
+      text-align: center;
+      color: var(--text-secondary);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1 class="title">YouTube Sync</h1>
+      <div class="status-badge">
+        <span id="status-dot" class="status-dot"></span>
+        <span id="status-text">Offline</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="section-title">Select Sync Role</h2>
+      <div class="role-selector">
+        <button id="btn-host" class="role-btn">
+          <span>Host (Main)</span>
+          <span class="role-desc">Publishes playback</span>
+        </button>
+        <button id="btn-follower" class="role-btn">
+          <span>Follower</span>
+          <span class="role-desc">Follows Host</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="footer">
+      Connected to viraj-homelab.online
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Sync",
+  "version": "1.0.0",
+  "description": "Silently synchronize YouTube playback and navigation between clients.",
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "*://*.youtube.com/*",
+    "https://yt-sync.viraj-homelab.online/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup/popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.youtube.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_end"
+    }
+  ]
+}
