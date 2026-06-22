@@ -1,6 +1,12 @@
+// Injection Guard: Check if the content script is already loaded and active.
+// When an extension is reloaded or updated, the previous extension context is invalidated.
+// Standard content script files still exist on the tab, but attempting to communicate via chrome.runtime throws errors.
+// This guard ensures that we only skip initialization if a fully valid, connected script is already running.
 let shouldInitialize = true;
 if (window.hasYouTubeSyncLoaded) {
   try {
+    // If checkYouTubeSyncContext() throws an error (e.g. "Extension context invalidated"),
+    // it indicates the previous script instance is dead, and we should proceed with re-initializing.
     if (window.checkYouTubeSyncContext && window.checkYouTubeSyncContext()) {
       console.log('YouTube Sync content script already loaded and active.');
       shouldInitialize = false;
@@ -12,6 +18,9 @@ if (window.hasYouTubeSyncLoaded) {
 
 if (shouldInitialize) {
   window.hasYouTubeSyncLoaded = true;
+  // Expose a check function on window. Under a new injection, this function binds to the new context.
+  // When called by a future injection, it will run using the context it was created in,
+  // throwing an error if that context is no longer active.
   window.checkYouTubeSyncContext = () => {
     return !!(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id);
   };
@@ -24,6 +33,7 @@ if (shouldInitialize) {
     state: '',
     time: -1
   };
+  let lastHostStatePayload = null;
 
   // Find the video element on the page
   function findVideoElement() {
@@ -90,12 +100,18 @@ if (shouldInitialize) {
     }
   }
 
-  // Keep looking for video elements periodically (useful for SPAs like YouTube)
-  setInterval(() => {
+  // Keep looking for video elements periodically and check sync status for followers
+  setInterval(async () => {
     const video = findVideoElement();
-    if (video && !video.hasSyncListeners) {
-      setupEventListeners();
-      video.hasSyncListeners = true;
+    if (video) {
+      if (!video.hasSyncListeners) {
+        setupEventListeners();
+        video.hasSyncListeners = true;
+      }
+      const { role = 'follower' } = await chrome.storage.local.get('role');
+      if (role === 'follower' && lastHostStatePayload) {
+        applyFollowerSync(lastHostStatePayload);
+      }
     }
   }, 1000);
 
@@ -115,6 +131,7 @@ if (shouldInitialize) {
   // Listen to sync messages from the background service worker (for Followers)
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'syncPlayback') {
+      lastHostStatePayload = message.payload;
       applyFollowerSync(message.payload);
       sendResponse({ ack: true });
     }
@@ -143,8 +160,8 @@ if (shouldInitialize) {
     }
 
     const drift = Math.abs(video.currentTime - targetTime);
-    // If the local playback is off by more than 1.5 seconds, seek
-    if (drift > 1.5) {
+    // If the local playback is off by more than 1.0 second, seek
+    if (drift > 1.0) {
       console.log(`Syncing time. Drift: ${drift.toFixed(2)}s. Seeking to: ${targetTime.toFixed(2)}s`);
       video.currentTime = targetTime;
     }

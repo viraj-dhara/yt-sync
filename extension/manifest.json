@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "YouTube Sync",
   "version": "0.0.1",
-  "description": "Silently synchronize YouTube playback and navigation between clients.",
+  "description": "Synchronize YouTube playback and navigation between clients.",
   "permissions": [
     "storage",
     "tabs",

@@ -1,4 +1,4 @@
-const SERVER_URL = 'ws://192.168.1.23:3000';
+const SERVER_URL = 'ws://yt-sync.viraj-homelab.online';
 let ws = null;
 let connectionStatus = 'disconnected';
 let reconnectTimeout = null;
@@ -159,7 +159,13 @@ async function handleFollowerSync(payload) {
   }
 }
 
-// Automatically re-inject content script when the synced tab navigates/reloads
+// Automatically re-inject content script when the synced tab navigates/reloads.
+// Since the extension does not declare static content script match patterns (to avoid CWS host permission prompt),
+// we must programmatically inject content.js.
+// When the sync tab navigates to a new video (triggering a page reload) or is newly created,
+// the previous content script context is destroyed.
+// This listener detects when the tab has finished loading ('complete' status) and executes the injection.
+// The activeTab permission remains active for this tab as long as the origin (youtube.com) does not change.
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (tabId === syncTabId && changeInfo.status === 'complete') {
     console.log('Sync tab reloaded/navigated, injecting content script...');
