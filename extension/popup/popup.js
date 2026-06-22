@@ -8,6 +8,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   const { role = 'follower' } = await chrome.storage.local.get('role');
   updateRoleUI(role);
 
+  // Initialize active tab synchronization if on YouTube
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab && tab.url && tab.url.includes('youtube.com')) {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['content.js']
+      });
+      await chrome.runtime.sendMessage({ type: 'registerSyncTab', tabId: tab.id });
+    }
+  } catch (err) {
+    console.error('Failed to initialize active tab synchronization:', err);
+  }
+
   // Ask background service worker for current connection status
   try {
     const response = await chrome.runtime.sendMessage({ type: 'getConnectionStatus' });

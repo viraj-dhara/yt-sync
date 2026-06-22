@@ -1,5 +1,22 @@
-(async () => {
-  console.log('YouTube Sync content script loaded.');
+let shouldInitialize = true;
+if (window.hasYouTubeSyncLoaded) {
+  try {
+    if (window.checkYouTubeSyncContext && window.checkYouTubeSyncContext()) {
+      console.log('YouTube Sync content script already loaded and active.');
+      shouldInitialize = false;
+    }
+  } catch (e) {
+    // Context invalidated, proceed with initialization
+  }
+}
+
+if (shouldInitialize) {
+  window.hasYouTubeSyncLoaded = true;
+  window.checkYouTubeSyncContext = () => {
+    return !!(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id);
+  };
+  (async () => {
+    console.log('YouTube Sync content script loaded.');
 
   let videoElement = null;
   let lastSentState = {
@@ -133,3 +150,4 @@
     }
   }
 })();
+}

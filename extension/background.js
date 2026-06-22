@@ -1,4 +1,4 @@
-const SERVER_URL = 'wss://yt-sync.viraj-homelab.online';
+const SERVER_URL = 'ws://192.168.1.23:3000';
 let ws = null;
 let connectionStatus = 'disconnected';
 let reconnectTimeout = null;
@@ -22,7 +22,7 @@ function connect() {
   if (ws) {
     try {
       ws.close();
-    } catch (e) {}
+    } catch (e) { }
   }
 
   console.log('Connecting to', SERVER_URL);
@@ -53,7 +53,7 @@ function connect() {
       } else if (message.type === 'roleDemoted') {
         console.warn('Demoted to follower by server');
         await chrome.storage.local.set({ role: 'follower' });
-        chrome.runtime.sendMessage({ type: 'roleChanged', role: 'follower' }).catch(() => {});
+        chrome.runtime.sendMessage({ type: 'roleChanged', role: 'follower' }).catch(() => { });
       }
     } catch (err) {
       console.error('Error handling WebSocket message:', err);
@@ -74,11 +74,11 @@ function connect() {
 
 function scheduleReconnect() {
   if (reconnectTimeout) clearTimeout(reconnectTimeout);
-  
+
   // Cap exponential backoff at 16 seconds
   reconnectDelay = Math.min(reconnectDelay * 2, 16000);
   console.log(`Reconnecting in ${reconnectDelay}ms...`);
-  
+
   reconnectTimeout = setTimeout(() => {
     connect();
   }, reconnectDelay);
@@ -159,10 +159,27 @@ async function handleFollowerSync(payload) {
   }
 }
 
+// Automatically re-inject content script when the synced tab navigates/reloads
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (tabId === syncTabId && changeInfo.status === 'complete') {
+    console.log('Sync tab reloaded/navigated, injecting content script...');
+    chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      files: ['content.js']
+    }).catch((err) => {
+      console.warn('Failed to auto-inject content script on tab update:', err);
+    });
+  }
+});
+
 // Listen for messages from popup or content script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'getConnectionStatus') {
     sendResponse({ status: connectionStatus });
+  } else if (message.type === 'registerSyncTab') {
+    syncTabId = message.tabId;
+    console.log('Registered sync tab ID:', syncTabId);
+    sendResponse({ ack: true });
   } else if (message.type === 'roleChanged') {
     console.log('Role changed to:', message.role);
     sendWSMessage({ type: 'setRole', role: message.role });
