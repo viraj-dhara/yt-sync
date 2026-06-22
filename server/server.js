@@ -67,6 +67,7 @@ wss.on('connection', (ws) => {
               currentUrl: message.payload.currentUrl,
               state: message.payload.state,
               currentTime: message.payload.currentTime,
+              sentAt: message.payload.sentAt,
               updatedAt: Date.now()
             };
 

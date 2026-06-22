@@ -2,7 +2,7 @@
 // When an extension is reloaded or updated, the previous extension context is invalidated.
 // Standard content script files still exist on the tab, but attempting to communicate via chrome.runtime throws errors.
 // This guard ensures that we only skip initialization if a fully valid, connected script is already running.
-let shouldInitialize = true;
+var shouldInitialize = true;
 if (window.hasYouTubeSyncLoaded) {
   try {
     // If checkYouTubeSyncContext() throws an error (e.g. "Extension context invalidated"),
@@ -27,144 +27,174 @@ if (shouldInitialize) {
   (async () => {
     console.log('YouTube Sync content script loaded.');
 
-  let videoElement = null;
-  let lastSentState = {
-    url: '',
-    state: '',
-    time: -1
-  };
-  let lastHostStatePayload = null;
+    let videoElement = null;
+    let lastSentState = {
+      url: '',
+      state: '',
+      time: -1
+    };
+    let lastHostStatePayload = null;
 
-  // Find the video element on the page
-  function findVideoElement() {
-    if (videoElement && document.body.contains(videoElement)) {
+    // Find the video element on the page
+    function findVideoElement() {
+      if (videoElement && document.body.contains(videoElement)) {
+        return videoElement;
+      }
+      videoElement = document.querySelector('video');
+      if (videoElement) {
+        setupEventListeners();
+      }
       return videoElement;
     }
-    videoElement = document.querySelector('video');
-    if (videoElement) {
-      setupEventListeners();
+
+    // Setup listeners on the video element for Host mode
+    function setupEventListeners() {
+      if (!videoElement) return;
+
+      // Remove any existing listeners first to prevent duplicates
+      videoElement.removeEventListener('play', handleVideoEvent);
+      videoElement.removeEventListener('pause', handleVideoEvent);
+      videoElement.removeEventListener('seeked', handleVideoEvent);
+
+      videoElement.addEventListener('play', handleVideoEvent);
+      videoElement.addEventListener('pause', handleVideoEvent);
+      videoElement.addEventListener('seeked', handleVideoEvent);
     }
-    return videoElement;
-  }
 
-  // Setup listeners on the video element for Host mode
-  function setupEventListeners() {
-    if (!videoElement) return;
+    // Check and report state if we are the host
+    async function handleVideoEvent(e) {
+      try {
+        const { role = 'follower' } = await chrome.storage.local.get('role');
+        if (role !== 'host') return;
 
-    // Remove any existing listeners first to prevent duplicates
-    videoElement.removeEventListener('play', handleVideoEvent);
-    videoElement.removeEventListener('pause', handleVideoEvent);
-    videoElement.removeEventListener('seeked', handleVideoEvent);
+        sendHostState(e ? e.type : 'periodic');
+      } catch (err) {
+        // Suppress extension context invalidated errors
+      }
+    }
 
-    videoElement.addEventListener('play', handleVideoEvent);
-    videoElement.addEventListener('pause', handleVideoEvent);
-    videoElement.addEventListener('seeked', handleVideoEvent);
-  }
+    function sendHostState(trigger = 'periodic') {
+      const video = findVideoElement();
+      if (!video) return;
 
-  // Check and report state if we are the host
-  async function handleVideoEvent(e) {
-    const { role = 'follower' } = await chrome.storage.local.get('role');
-    if (role !== 'host') return;
+      const currentUrl = window.location.href;
+      const currentState = video.paused ? 'paused' : 'playing';
+      const currentTime = video.currentTime;
 
-    sendHostState(e ? e.type : 'periodic');
-  }
+      // Avoid duplicate triggers unless it's a periodic sync or a significant change
+      const timeDiff = Math.abs(currentTime - lastSentState.time);
+      if (
+        trigger !== 'periodic' ||
+        lastSentState.url !== currentUrl ||
+        lastSentState.state !== currentState ||
+        timeDiff > 0.5
+      ) {
+        lastSentState = { url: currentUrl, state: currentState, time: currentTime };
 
-  function sendHostState(trigger = 'periodic') {
-    const video = findVideoElement();
-    if (!video) return;
+        chrome.runtime.sendMessage({
+          type: 'hostStateUpdate',
+          payload: {
+            currentUrl,
+            state: currentState,
+            currentTime,
+            sentAt: Date.now()
+          }
+        }).catch((err) => {
+          console.error('Error sending host state update:', err);
+        });
+      }
+    }
 
-    const currentUrl = window.location.href;
-    const currentState = video.paused ? 'paused' : 'playing';
-    const currentTime = video.currentTime;
-
-    // Avoid duplicate triggers unless it's a periodic sync or a significant change
-    const timeDiff = Math.abs(currentTime - lastSentState.time);
-    if (
-      trigger !== 'periodic' ||
-      lastSentState.url !== currentUrl ||
-      lastSentState.state !== currentState ||
-      timeDiff > 2.0
-    ) {
-      lastSentState = { url: currentUrl, state: currentState, time: currentTime };
-
-      chrome.runtime.sendMessage({
-        type: 'hostStateUpdate',
-        payload: {
-          currentUrl,
-          state: currentState,
-          currentTime
+    // Keep looking for video elements periodically and check sync status for followers
+    const checkInterval = setInterval(async () => {
+      if (!chrome.runtime?.id) {
+        clearInterval(checkInterval);
+        return;
+      }
+      try {
+        const video = findVideoElement();
+        if (video) {
+          if (!video.hasSyncListeners) {
+            setupEventListeners();
+            video.hasSyncListeners = true;
+          }
+          const { role = 'follower' } = await chrome.storage.local.get('role');
+          if (role === 'follower' && lastHostStatePayload) {
+            applyFollowerSync(lastHostStatePayload);
+          }
         }
-      }).catch((err) => {
-        console.error('Error sending host state update:', err);
-      });
-    }
-  }
-
-  // Keep looking for video elements periodically and check sync status for followers
-  setInterval(async () => {
-    const video = findVideoElement();
-    if (video) {
-      if (!video.hasSyncListeners) {
-        setupEventListeners();
-        video.hasSyncListeners = true;
+      } catch (err) {
+        if (err.message.includes('Extension context invalidated')) {
+          clearInterval(checkInterval);
+        } else {
+          console.error(err);
+        }
       }
-      const { role = 'follower' } = await chrome.storage.local.get('role');
-      if (role === 'follower' && lastHostStatePayload) {
-        applyFollowerSync(lastHostStatePayload);
+    }, 250);
+
+    // Send periodic sync state if we are the host
+    const hostInterval = setInterval(async () => {
+      if (!chrome.runtime?.id) {
+        clearInterval(hostInterval);
+        return;
+      }
+      try {
+        const { role = 'follower' } = await chrome.storage.local.get('role');
+        if (role === 'host') {
+          sendHostState('periodic');
+        }
+      } catch (err) {
+        if (err.message.includes('Extension context invalidated')) {
+          clearInterval(hostInterval);
+        } else {
+          console.error(err);
+        }
+      }
+    }, 500);
+
+    // Listen to custom YouTube navigation events to capture URL transitions
+    document.addEventListener('yt-navigate-finish', () => {
+      handleVideoEvent();
+    });
+
+    // Listen to sync messages from the background service worker (for Followers)
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (message.type === 'syncPlayback') {
+        lastHostStatePayload = message.payload;
+        applyFollowerSync(message.payload);
+        sendResponse({ ack: true });
+      }
+      return true;
+    });
+
+    // Apply playback and time synchronization
+    function applyFollowerSync(payload) {
+      const video = findVideoElement();
+      if (!video) return;
+
+      const { state, currentTime, sentAt, updatedAt } = payload;
+
+      // 1. Sync play/pause state
+      if (state === 'playing' && video.paused) {
+        video.play().catch((e) => console.log('Playback start prevented:', e));
+      } else if (state === 'paused' && !video.paused) {
+        video.pause();
+      }
+
+      // 2. Sync elapsed time (accounting for latency/drift)
+      let targetTime = currentTime;
+      if (state === 'playing') {
+        const referenceTime = sentAt || updatedAt;
+        const latencySeconds = (Date.now() - referenceTime) / 1000;
+        targetTime += latencySeconds;
+      }
+
+      const drift = Math.abs(video.currentTime - targetTime);
+      // If the local playback is off by more than 0.25 seconds, seek
+      if (drift > 0.5) {
+        console.log(`Syncing time. Drift: ${drift.toFixed(2)}s. Seeking to: ${targetTime.toFixed(2)}s`);
+        video.currentTime = targetTime;
       }
     }
-  }, 1000);
-
-  // Send periodic sync state if we are the host
-  setInterval(async () => {
-    const { role = 'follower' } = await chrome.storage.local.get('role');
-    if (role === 'host') {
-      sendHostState('periodic');
-    }
-  }, 2000);
-
-  // Listen to custom YouTube navigation events to capture URL transitions
-  document.addEventListener('yt-navigate-finish', () => {
-    handleVideoEvent();
-  });
-
-  // Listen to sync messages from the background service worker (for Followers)
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'syncPlayback') {
-      lastHostStatePayload = message.payload;
-      applyFollowerSync(message.payload);
-      sendResponse({ ack: true });
-    }
-    return true;
-  });
-
-  // Apply playback and time synchronization
-  function applyFollowerSync(payload) {
-    const video = findVideoElement();
-    if (!video) return;
-
-    const { state, currentTime, updatedAt } = payload;
-
-    // 1. Sync play/pause state
-    if (state === 'playing' && video.paused) {
-      video.play().catch((e) => console.log('Playback start prevented:', e));
-    } else if (state === 'paused' && !video.paused) {
-      video.pause();
-    }
-
-    // 2. Sync elapsed time (accounting for latency/drift)
-    let targetTime = currentTime;
-    if (state === 'playing') {
-      const latencySeconds = (Date.now() - updatedAt) / 1000;
-      targetTime += latencySeconds;
-    }
-
-    const drift = Math.abs(video.currentTime - targetTime);
-    // If the local playback is off by more than 1.0 second, seek
-    if (drift > 1.0) {
-      console.log(`Syncing time. Drift: ${drift.toFixed(2)}s. Seeking to: ${targetTime.toFixed(2)}s`);
-      video.currentTime = targetTime;
-    }
-  }
-})();
+  })();
 }
