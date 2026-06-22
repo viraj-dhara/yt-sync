@@ -6,3 +6,5 @@ _debug
 _metadata
 dist
 **/*.swp 
+
+*.zip
