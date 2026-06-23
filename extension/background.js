@@ -76,7 +76,7 @@ function scheduleReconnect() {
   if (reconnectTimeout) clearTimeout(reconnectTimeout);
 
   // Cap exponential backoff at 16 seconds
-  reconnectDelay = Math.min(reconnectDelay * 2, 16000);
+  reconnectDelay = Math.min(reconnectDelay * 2, 3000);
   console.log(`Reconnecting in ${reconnectDelay}ms...`);
 
   reconnectTimeout = setTimeout(() => {
@@ -115,7 +115,7 @@ async function handleFollowerSync(payload) {
     }
   }
 
-  // 2. If no valid syncTabId, try to find any existing YouTube tab
+  // 2. If no valid syncTabId, try to find any existing YouTube tab //MARK: Change behaviour to click-only, not automatic
   if (!targetTab) {
     const ytTabs = await chrome.tabs.query({ url: '*://*.youtube.com/*' });
     if (ytTabs.length > 0) {
