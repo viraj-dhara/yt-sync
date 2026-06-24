@@ -1,14 +1,28 @@
+// MARK: - State & Configurations
 const SERVER_URL = 'ws://yt-sync.viraj-homelab.online';
 let ws = null;
 let connectionStatus = 'disconnected';
 let reconnectTimeout = null;
 let reconnectDelay = 1000;
+let heartbeatInterval = null;
 
 // Track follower's sync tab ID
 let syncTabId = null;
 
-// Initialize connection
-connect();
+
+// MARK: - Initialization
+
+// Initialize connection on startup if master switch is ON
+chrome.storage.local.get('enabled').then(({ enabled }) => {
+  if (enabled) {
+    connect();
+  } else {
+    setConnectionStatus('disconnected');
+  }
+});
+
+
+// MARK: - Status & Heartbeat Utilities
 
 function setConnectionStatus(status) {
   connectionStatus = status;
@@ -18,7 +32,30 @@ function setConnectionStatus(status) {
   });
 }
 
-function connect() {
+function startHeartbeat() {
+  stopHeartbeat();
+  heartbeatInterval = setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      sendWSMessage({ type: 'ping' });
+    }
+  }, 20000); // Send ping every 20 seconds to keep MV3 Service Worker active
+}
+
+function stopHeartbeat() {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+  }
+}
+
+// MARK: - WebSocket Connection Logic
+async function connect() {
+  const { enabled = false } = await chrome.storage.local.get('enabled');
+  if (!enabled) {
+    setConnectionStatus('disconnected');
+    return;
+  }
+
   if (ws) {
     try {
       ws.close();
@@ -34,6 +71,7 @@ function connect() {
     console.log('WebSocket connected');
     setConnectionStatus('connected');
     reconnectDelay = 1000;
+    startHeartbeat();
 
     // Send role registration immediately
     const { role = 'follower' } = await chrome.storage.local.get('role');
@@ -63,20 +101,25 @@ function connect() {
   ws.onclose = () => {
     console.log('WebSocket closed');
     setConnectionStatus('disconnected');
+    stopHeartbeat();
     scheduleReconnect();
   };
 
   ws.onerror = (err) => {
     console.error('WebSocket error:', err);
     setConnectionStatus('disconnected');
+    stopHeartbeat();
   };
 }
 
-function scheduleReconnect() {
+async function scheduleReconnect() {
+  const { enabled = false } = await chrome.storage.local.get('enabled');
+  if (!enabled) return;
+
   if (reconnectTimeout) clearTimeout(reconnectTimeout);
 
-  // Cap exponential backoff at 16 seconds
-  reconnectDelay = Math.min(reconnectDelay * 2, 3000);
+  // Cap exponential backoff at 10 seconds
+  reconnectDelay = Math.min(reconnectDelay * 2, 10000);
   console.log(`Reconnecting in ${reconnectDelay}ms...`);
 
   reconnectTimeout = setTimeout(() => {
@@ -91,6 +134,9 @@ function sendWSMessage(data) {
     console.warn('WebSocket not open. Cannot send:', data);
   }
 }
+
+
+// MARK: - Follower Synchronization Handler
 
 // Handles Follower tab selection and synchronization
 async function handleFollowerSync(payload) {
@@ -159,6 +205,9 @@ async function handleFollowerSync(payload) {
   }
 }
 
+
+// MARK: - Content Script Auto-Injection
+
 // Automatically re-inject content script when the synced tab navigates/reloads.
 // Since the extension does not declare static content script match patterns (to avoid CWS host permission prompt),
 // we must programmatically inject content.js.
@@ -166,8 +215,11 @@ async function handleFollowerSync(payload) {
 // the previous content script context is destroyed.
 // This listener detects when the tab has finished loading ('complete' status) and executes the injection.
 // The activeTab permission remains active for this tab as long as the origin (youtube.com) does not change.
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (tabId === syncTabId && changeInfo.status === 'complete') {
+    const { enabled = false } = await chrome.storage.local.get('enabled');
+    if (!enabled) return;
+
     console.log('Sync tab reloaded/navigated, injecting content script...');
     chrome.scripting.executeScript({
       target: { tabId: tabId },
@@ -178,10 +230,35 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   }
 });
 
+
+// MARK: - Extension Message Listeners
+
 // Listen for messages from popup or content script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'getConnectionStatus') {
     sendResponse({ status: connectionStatus });
+  } else if (message.type === 'contentPing') {
+    if (connectionStatus === 'disconnected') {
+      chrome.storage.local.get('enabled').then(({ enabled = false }) => {
+        if (enabled) {
+          console.log('Received ping from active content script. Reconnecting WebSocket...');
+          connect();
+        }
+      });
+    }
+    sendResponse({ ack: true });
+  } else if (message.type === 'toggleEnabled') {
+    if (message.enabled) {
+      connect();
+    } else {
+      if (ws) {
+        try {
+          ws.close();
+        } catch (e) { }
+      }
+      setConnectionStatus('disconnected');
+    }
+    sendResponse({ ack: true });
   } else if (message.type === 'registerSyncTab') {
     syncTabId = message.tabId;
     console.log('Registered sync tab ID:', syncTabId);
@@ -192,8 +269,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ ack: true });
   } else if (message.type === 'hostStateUpdate') {
     // Only forward state update if we are indeed the host
-    chrome.storage.local.get('role').then(({ role = 'follower' }) => {
-      if (role === 'host') {
+    chrome.storage.local.get(['enabled', 'role']).then(({ enabled = false, role = 'follower' }) => {
+      if (enabled && role === 'host') {
         sendWSMessage({
           type: 'updateState',
           payload: message.payload

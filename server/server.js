@@ -24,8 +24,28 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', hasHost: !!hostSocket, clientsCount: wss.clients.size });
 });
 
+// Setup heartbeat check to prune dead clients (e.g. from machine sleep)
+const heartbeatInterval = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.isAlive === false) {
+      console.log('Pruning dead client connection');
+      if (ws === hostSocket) {
+        hostSocket = null;
+        console.log('Host disconnected (pruned)');
+      }
+      return ws.terminate();
+    }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 30000);
+
 wss.on('connection', (ws) => {
   console.log('Client connected');
+  ws.isAlive = true;
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
   
   // Assign a temporary role as follower until they register
   ws.role = 'follower';
@@ -84,6 +104,10 @@ wss.on('connection', (ws) => {
             });
           }
           break;
+        
+        case 'ping':
+          // Silent heartbeat response to keep connection alive
+          break;
 
         default:
           console.warn('Unknown message type:', message.type);
@@ -104,6 +128,10 @@ wss.on('connection', (ws) => {
   ws.on('error', (err) => {
     console.error('WebSocket client error:', err);
   });
+});
+
+wss.on('close', () => {
+  clearInterval(heartbeatInterval);
 });
 
 server.listen(PORT, () => {

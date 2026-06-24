@@ -1,3 +1,4 @@
+// MARK: - Injection Guard
 // Injection Guard: Check if the content script is already loaded and active.
 // When an extension is reloaded or updated, the previous extension context is invalidated.
 // Standard content script files still exist on the tab, but attempting to communicate via chrome.runtime throws errors.
@@ -27,6 +28,7 @@ if (shouldInitialize) {
   (async () => {
     console.log('YouTube Sync content script loaded.');
 
+    // MARK: - State Variables
     let videoElement = null;
     let lastSentState = {
       url: '',
@@ -35,6 +37,7 @@ if (shouldInitialize) {
     };
     let lastHostStatePayload = null;
 
+    // MARK: - DOM Elements & Event Setups
     // Find the video element on the page
     function findVideoElement() {
       if (videoElement && document.body.contains(videoElement)) {
@@ -61,6 +64,7 @@ if (shouldInitialize) {
       videoElement.addEventListener('seeked', handleVideoEvent);
     }
 
+    // MARK: - Host State Extraction & Reporting
     // Check and report state if we are the host
     async function handleVideoEvent(e) {
       try {
@@ -105,6 +109,7 @@ if (shouldInitialize) {
       }
     }
 
+    // MARK: - Periodic Status Check Pollers
     // Keep looking for video elements periodically and check sync status for followers
     const checkInterval = setInterval(async () => {
       if (!chrome.runtime?.id) {
@@ -152,11 +157,13 @@ if (shouldInitialize) {
       }
     }, 500);
 
+    // MARK: - YouTube Navigation Listeners
     // Listen to custom YouTube navigation events to capture URL transitions
     document.addEventListener('yt-navigate-finish', () => {
       handleVideoEvent();
     });
 
+    // MARK: - Extension Message Receivers
     // Listen to sync messages from the background service worker (for Followers)
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.type === 'syncPlayback') {
@@ -167,6 +174,7 @@ if (shouldInitialize) {
       return true;
     });
 
+    // MARK: - Follower Synchronization Logic
     // Apply playback and time synchronization
     function applyFollowerSync(payload) {
       const video = findVideoElement();
@@ -196,5 +204,18 @@ if (shouldInitialize) {
         video.currentTime = targetTime;
       }
     }
+    // MARK: - Service Worker Keep-Alive Ping
+    // Periodically ping the background service worker to keep it alive or trigger reconnection
+    const pingIntervalId = setInterval(() => {
+      if (!chrome.runtime?.id) {
+        clearInterval(pingIntervalId);
+        return;
+      }
+      chrome.runtime.sendMessage({ type: 'contentPing' }).catch((err) => {
+        if (err.message.includes('Extension context invalidated')) {
+          clearInterval(pingIntervalId);
+        }
+      });
+    }, 10000);
   })();
 }
