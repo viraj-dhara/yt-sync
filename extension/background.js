@@ -80,13 +80,14 @@ async function connect() {
 
   ws.onmessage = async (event) => {
     try {
+      const wsReceivedAt = Date.now();
       const message = JSON.parse(event.data);
       console.log('WebSocket message received:', message);
 
       if (message.type === 'syncState') {
         const { role = 'follower' } = await chrome.storage.local.get('role');
         if (role === 'follower') {
-          await handleFollowerSync(message.payload);
+          await handleFollowerSync(message.payload, wsReceivedAt);
         }
       } else if (message.type === 'roleDemoted') {
         console.warn('Demoted to follower by server');
@@ -139,7 +140,7 @@ function sendWSMessage(data) {
 // MARK: - Follower Synchronization Handler
 
 // Handles Follower tab selection and synchronization
-async function handleFollowerSync(payload) {
+async function handleFollowerSync(payload, wsReceivedAt = null) {
   const { currentUrl } = payload;
   if (!currentUrl) return;
 
@@ -196,7 +197,8 @@ async function handleFollowerSync(payload) {
     try {
       await chrome.tabs.sendMessage(syncTabId, {
         type: 'syncPlayback',
-        payload
+        payload,
+        wsReceivedAt
       });
     } catch (err) {
       // Content script might not be loaded yet, retry shortly or ignore

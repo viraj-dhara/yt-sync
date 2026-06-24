@@ -36,6 +36,8 @@ if (shouldInitialize) {
       time: -1
     };
     let lastHostStatePayload = null;
+    let lastSentTimestamp = 0;
+    let lastHostStateWsReceivedAt = 0;
 
     // MARK: - DOM Elements & Event Setups
     // Find the video element on the page
@@ -65,6 +67,7 @@ if (shouldInitialize) {
     }
 
     // MARK: - Host State Extraction & Reporting
+
     // Check and report state if we are the host
     async function handleVideoEvent(e) {
       try {
@@ -85,31 +88,29 @@ if (shouldInitialize) {
       const currentState = video.paused ? 'paused' : 'playing';
       const currentTime = video.currentTime;
 
-      // Avoid duplicate triggers unless it's a periodic sync or a significant change
-      const timeDiff = Math.abs(currentTime - lastSentState.time);
-      if (
-        trigger !== 'periodic' ||
-        lastSentState.url !== currentUrl ||
-        lastSentState.state !== currentState ||
-        timeDiff > 0.5
-      ) {
-        lastSentState = { url: currentUrl, state: currentState, time: currentTime };
-
-        chrome.runtime.sendMessage({
-          type: 'hostStateUpdate',
-          payload: {
-            currentUrl,
-            state: currentState,
-            currentTime,
-            sentAt: Date.now()
-          }
-        }).catch((err) => {
-          console.error('Error sending host state update:', err);
-        });
+      // Throttle periodic updates to once per 900ms (nearly 1s) to prevent redundant packets
+      if (trigger === 'periodic' && (Date.now() - lastSentTimestamp < 900)) {
+        return;
       }
+
+      lastSentState = { url: currentUrl, state: currentState, time: currentTime };
+      lastSentTimestamp = Date.now();
+
+      chrome.runtime.sendMessage({
+        type: 'hostStateUpdate',
+        payload: {
+          currentUrl,
+          state: currentState,
+          currentTime,
+          sentAt: lastSentTimestamp
+        }
+      }).catch((err) => {
+        console.error('Error sending host state update:', err);
+      });
     }
 
     // MARK: - Periodic Status Check Pollers
+
     // Keep looking for video elements periodically and check sync status for followers
     const checkInterval = setInterval(async () => {
       if (!chrome.runtime?.id) {
@@ -125,7 +126,7 @@ if (shouldInitialize) {
           }
           const { role = 'follower' } = await chrome.storage.local.get('role');
           if (role === 'follower' && lastHostStatePayload) {
-            applyFollowerSync(lastHostStatePayload);
+            applyFollowerSync(lastHostStatePayload, lastHostStateWsReceivedAt);
           }
         }
       } catch (err) {
@@ -155,20 +156,23 @@ if (shouldInitialize) {
           console.error(err);
         }
       }
-    }, 500);
+    }, 1000);
 
     // MARK: - YouTube Navigation Listeners
     // Listen to custom YouTube navigation events to capture URL transitions
     document.addEventListener('yt-navigate-finish', () => {
-      handleVideoEvent();
+      handleVideoEvent({ type: 'navigate' });
     });
 
+
     // MARK: - Extension Message Receivers
+
     // Listen to sync messages from the background service worker (for Followers)
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.type === 'syncPlayback') {
         lastHostStatePayload = message.payload;
-        applyFollowerSync(message.payload);
+        lastHostStateWsReceivedAt = message.wsReceivedAt;
+        applyFollowerSync(message.payload, message.wsReceivedAt);
         sendResponse({ ack: true });
       }
       return true;
@@ -176,7 +180,7 @@ if (shouldInitialize) {
 
     // MARK: - Follower Synchronization Logic
     // Apply playback and time synchronization
-    function applyFollowerSync(payload) {
+    function applyFollowerSync(payload, wsReceivedAt = null) {
       const video = findVideoElement();
       if (!video) return;
 
@@ -192,9 +196,17 @@ if (shouldInitialize) {
       // 2. Sync elapsed time (accounting for latency/drift)
       let targetTime = currentTime;
       if (state === 'playing') {
-        const referenceTime = sentAt || updatedAt;
-        const latencySeconds = (Date.now() - referenceTime) / 1000;
-        targetTime += latencySeconds;
+        if (wsReceivedAt) {
+          // Calculate delay relative to local receipt time to avoid cross-device clock skew
+          const localDelay = (Date.now() - wsReceivedAt) / 1000;
+          const estimatedNetworkTransit = 0.05; // 50ms fallback transit estimate
+          targetTime += estimatedNetworkTransit + localDelay;
+        } else {
+          // Fallback to cross-device absolute clock difference if wsReceivedAt is unavailable
+          const referenceTime = sentAt || updatedAt;
+          const latencySeconds = referenceTime ? (Date.now() - referenceTime) / 1000 : 0;
+          targetTime += latencySeconds;
+        }
       }
 
       const drift = Math.abs(video.currentTime - targetTime);
