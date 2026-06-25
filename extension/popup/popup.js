@@ -7,6 +7,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const statusText = document.getElementById('status-text');
   const syncToggle = document.getElementById('sync-enable-toggle');
   const roleCard = document.getElementById('role-card');
+  const syncTabRow = document.getElementById('sync-tab-row');
+  let currentSyncTabId = null;
 
   // Load the current enabled and role state
   const { enabled = false, role = 'follower' } = await chrome.storage.local.get(['enabled', 'role']);
@@ -15,7 +17,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   updateToggleUI(enabled);
 
   // Get active tab info to check if it's YouTube
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  const tab = await getActiveTab();
   const isYouTube = tab && tab.url && tab.url.includes('youtube.com');
   const warningCard = document.getElementById('warning-card');
 
@@ -36,6 +38,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const syncTabTitle = document.getElementById('sync-tab-title');
 
       if (response && response.id && response.title) {
+        currentSyncTabId = response.id;
         warningText.textContent = "Please open YouTube.com to start synchronization.";
         syncTabInfo.style.display = "block";
         
@@ -45,6 +48,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         syncTabTitle.textContent = cleanTitle;
       } else {
+        currentSyncTabId = null;
         warningText.textContent = "Please open YouTube.com to start synchronization.";
         syncTabInfo.style.display = "none";
       }
@@ -72,7 +76,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const isEnabled = syncToggle.checked;
 
     // Check if we are on a YouTube tab
-    const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const activeTab = await getActiveTab();
     const isYT = activeTab && activeTab.url && activeTab.url.includes('youtube.com');
 
     if (isEnabled && !isYT) {
@@ -94,7 +98,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Auto-inject script immediately if enabled on a YouTube page
     if (isEnabled) {
       try {
-        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        const tab = await getActiveTab();
         if (tab && tab.url && tab.url.includes('youtube.com')) {
           await chrome.scripting.executeScript({
             target: { tabId: tab.id },
@@ -111,6 +115,22 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Handle role selections
   btnHost.addEventListener('click', () => setRole('host'));
   btnFollower.addEventListener('click', () => setRole('follower'));
+
+  // Navigate to syncing tab on click
+  if (syncTabRow) {
+    syncTabRow.addEventListener('click', () => {
+      if (currentSyncTabId !== null) {
+        chrome.tabs.get(currentSyncTabId, (tab) => {
+          if (chrome.runtime.lastError || !tab) {
+            console.error('Active sync tab no longer exists');
+            return;
+          }
+          chrome.windows.update(tab.windowId, { focused: true });
+          chrome.tabs.update(currentSyncTabId, { active: true });
+        });
+      }
+    });
+  }
 
   // MARK: - Extension Message Receivers
   // Listen to status updates from background service worker
@@ -278,6 +298,32 @@ document.addEventListener('DOMContentLoaded', async () => {
         setTimeout(() => toast.remove(), 250);
       }
     }, 5000);
+  }
+
+  // Query active tabs and resolve the tab containing YouTube if multiple active tabs are present (like in Arc Browser split view)
+  async function getActiveTab() {
+    try {
+      // Query active tabs in the last focused window
+      const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      if (tabs && tabs.length > 0) {
+        // Look for YouTube tab first
+        const ytTab = tabs.find(t => t.url && t.url.includes('youtube.com'));
+        if (ytTab) return ytTab;
+        // Fallback to the first one in the last focused window
+        return tabs[0];
+      }
+      
+      // Fallback: Query active tabs in the current window
+      const currentTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (currentTabs && currentTabs.length > 0) {
+        const ytTab = currentTabs.find(t => t.url && t.url.includes('youtube.com'));
+        if (ytTab) return ytTab;
+        return currentTabs[0];
+      }
+    } catch (err) {
+      console.error('Error querying active tab:', err);
+    }
+    return null;
   }
 
   // Run immediately and poll every 1s while popup is open
