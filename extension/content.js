@@ -38,14 +38,14 @@ if (shouldInitialize) {
       } else if (document.title.startsWith(pausedPrefix)) {
         document.title = document.title.substring(pausedPrefix.length);
       }
-    } catch (e) {}
+    } catch (e) { }
 
     // MARK: - Timing & Synchronization Configs
     const CONFIG = {
       DOM_POLL_INTERVAL: 500,        // Interval (ms) to check for video elements & sync Follower state
       HOST_BROADCAST_INTERVAL: 500,  // Interval (ms) to send periodic sync updates as Host
       THROTTLE_THRESHOLD: 200,       // Minimum duration (ms) between consecutive periodic Host updates
-      DRIFT_THRESHOLD: 0.2,         // Acceptable playhead difference (s) before forcing a seek on Follower
+      DRIFT_THRESHOLD: 0.5,         // Acceptable playhead difference (s) before forcing a seek on Follower
       KEEP_ALIVE_INTERVAL: 1000,     // Interval (ms) to ping background page for keep-alive
       FOLLOWER_SYNC_THROTTLE: 1000   // Minimum duration (ms) between consecutive sync applications to Follower video
     };
@@ -90,9 +90,156 @@ if (shouldInitialize) {
         if (changes.enabled && changes.enabled.newValue === false) {
           teardown();
         }
+
+        // Listen to configuration changes and trigger hot reload of intervals
+        const configKeys = [
+          'domPollInterval',
+          'hostBroadcastInterval',
+          'throttleThreshold',
+          'driftThreshold',
+          'keepAliveInterval',
+          'followerSyncThrottle'
+        ];
+        const hasConfigChange = configKeys.some(key => changes[key] !== undefined);
+        if (hasConfigChange) {
+          syncConfigurations(true);
+        }
       }
     }
     chrome.storage.onChanged.addListener(handleStorageChange);
+
+    async function syncConfigurations(shouldRestartIntervals = false) {
+      try {
+        const data = await chrome.storage.local.get([
+          'domPollInterval',
+          'hostBroadcastInterval',
+          'throttleThreshold',
+          'driftThreshold',
+          'keepAliveInterval',
+          'followerSyncThrottle'
+        ]);
+
+        let hasIntervalChange = false;
+
+        if (data.domPollInterval !== undefined && data.domPollInterval !== CONFIG.DOM_POLL_INTERVAL) {
+          CONFIG.DOM_POLL_INTERVAL = data.domPollInterval;
+          hasIntervalChange = true;
+        }
+        if (data.hostBroadcastInterval !== undefined && data.hostBroadcastInterval !== CONFIG.HOST_BROADCAST_INTERVAL) {
+          CONFIG.HOST_BROADCAST_INTERVAL = data.hostBroadcastInterval;
+          hasIntervalChange = true;
+        }
+        if (data.keepAliveInterval !== undefined && data.keepAliveInterval !== CONFIG.KEEP_ALIVE_INTERVAL) {
+          CONFIG.KEEP_ALIVE_INTERVAL = data.keepAliveInterval;
+          hasIntervalChange = true;
+        }
+
+        if (data.throttleThreshold !== undefined) CONFIG.THROTTLE_THRESHOLD = data.throttleThreshold;
+        if (data.driftThreshold !== undefined) CONFIG.DRIFT_THRESHOLD = data.driftThreshold;
+        if (data.followerSyncThrottle !== undefined) CONFIG.FOLLOWER_SYNC_THROTTLE = data.followerSyncThrottle;
+
+        if (shouldRestartIntervals && hasIntervalChange) {
+          console.log('[YouTube Sync] Timing settings changed. Hot-reloading active intervals...');
+          startOrRestartIntervals();
+        }
+      } catch (err) {
+        // Suppress errors when context invalidated
+      }
+    }
+
+    function startOrRestartIntervals() {
+      // 1. DOM Poll/Follower Check Interval
+      if (checkInterval) clearInterval(checkInterval);
+      checkInterval = setInterval(async () => {
+        if (!chrome.runtime?.id) {
+          teardown();
+          return;
+        }
+        try {
+          if (window.location.href !== currentUrl) {
+            console.log(`[YouTube Sync] URL change detected in poll. Old: ${currentUrl}, New: ${window.location.href}`);
+            currentUrl = window.location.href;
+            urlChangedAt = Date.now();
+            isNavigating = true;
+          }
+
+          const response = await chrome.runtime.sendMessage({ type: 'checkIsSyncingTab' }).catch(() => null);
+          const syncActive = response ? response.isSyncing : false;
+
+          if (currentRole === 'host') {
+            isLocalFollowerPaused = false;
+          }
+          updateTabTitle(syncActive);
+
+          const video = findVideoElement();
+          if (video) {
+            if (!video.hasSyncListeners) {
+              setupEventListeners();
+              video.hasSyncListeners = true;
+            }
+            if (currentRole === 'follower' && syncActive) {
+              const isWaitingAfterUrlChange = (Date.now() - urlChangedAt < 2000) ||
+                (document.readyState !== 'complete') ||
+                (isNavigating && (Date.now() - urlChangedAt < 10000));
+
+              if (!isWaitingAfterUrlChange) {
+                const isHostActiveAndPlaying = lastHostStatePayload &&
+                  lastHostStatePayload.state === 'playing' &&
+                  (Date.now() - lastHostStateWsReceivedAt < 10000);
+
+                if (!video.paused && !isHostActiveAndPlaying) {
+                  console.log('[YouTube Sync] Automatically pausing follower tab: no active playing host.');
+                  expectedProgrammaticActions.pause++;
+                  video.pause();
+                } else if (lastHostStatePayload) {
+                  applyFollowerSync(lastHostStatePayload, lastHostStateWsReceivedAt);
+                }
+              }
+            }
+          }
+        } catch (err) {
+          if (err.message.includes('Extension context invalidated')) {
+            teardown();
+          } else {
+            console.error(err);
+          }
+        }
+      }, CONFIG.DOM_POLL_INTERVAL);
+
+      // 2. Host Broadcast Interval
+      if (hostInterval) clearInterval(hostInterval);
+      hostInterval = setInterval(async () => {
+        if (!chrome.runtime?.id) {
+          teardown();
+          return;
+        }
+        try {
+          if (currentRole === 'host') {
+            sendHostState('periodic');
+          }
+        } catch (err) {
+          if (err.message.includes('Extension context invalidated')) {
+            teardown();
+          } else {
+            console.error(err);
+          }
+        }
+      }, CONFIG.HOST_BROADCAST_INTERVAL);
+
+      // 3. Keep-Alive Ping Interval
+      if (pingIntervalId) clearInterval(pingIntervalId);
+      pingIntervalId = setInterval(() => {
+        if (!chrome.runtime?.id) {
+          teardown();
+          return;
+        }
+        chrome.runtime.sendMessage({ type: 'contentPing' }).catch((err) => {
+          if (err.message.includes('Extension context invalidated')) {
+            teardown();
+          }
+        });
+      }, CONFIG.KEEP_ALIVE_INTERVAL);
+    }
 
     // MARK: - DOM Elements & Event Setups
     // Find the video element on the page
@@ -188,85 +335,7 @@ if (shouldInitialize) {
       });
     }
 
-    // MARK: - Periodic Status Check Pollers
-
-    // Keep looking for video elements periodically and check sync status for followers
-    checkInterval = setInterval(async () => {
-      if (!chrome.runtime?.id) {
-        teardown();
-        return;
-      }
-      try {
-        // Backup URL change detection
-        if (window.location.href !== currentUrl) {
-          console.log(`[YouTube Sync] URL change detected in poll. Old: ${currentUrl}, New: ${window.location.href}`);
-          currentUrl = window.location.href;
-          urlChangedAt = Date.now();
-          isNavigating = true;
-        }
-
-        // Check if this tab is actively syncing and update title accordingly
-        const response = await chrome.runtime.sendMessage({ type: 'checkIsSyncingTab' }).catch(() => null);
-        const syncActive = response ? response.isSyncing : false;
-
-        if (currentRole === 'host') {
-          isLocalFollowerPaused = false;
-        }
-        updateTabTitle(syncActive);
-
-        const video = findVideoElement();
-        if (video) {
-          if (!video.hasSyncListeners) {
-            setupEventListeners();
-            video.hasSyncListeners = true;
-          }
-          if (currentRole === 'follower' && syncActive) {
-            const isWaitingAfterUrlChange = (Date.now() - urlChangedAt < 2000) ||
-              (document.readyState !== 'complete') ||
-              (isNavigating && (Date.now() - urlChangedAt < 10000));
-
-            if (!isWaitingAfterUrlChange) {
-              const isHostActiveAndPlaying = lastHostStatePayload &&
-                lastHostStatePayload.state === 'playing' &&
-                (Date.now() - lastHostStateWsReceivedAt < 10000);
-
-              if (!video.paused && !isHostActiveAndPlaying) {
-                console.log('[YouTube Sync] Automatically pausing follower tab: no active playing host.');
-                expectedProgrammaticActions.pause++;
-                video.pause();
-              } else if (lastHostStatePayload) {
-                applyFollowerSync(lastHostStatePayload, lastHostStateWsReceivedAt);
-              }
-            }
-          }
-        }
-      } catch (err) {
-        if (err.message.includes('Extension context invalidated')) {
-          teardown();
-        } else {
-          console.error(err);
-        }
-      }
-    }, CONFIG.DOM_POLL_INTERVAL);
-
-    // Send periodic sync state if we are the host
-    hostInterval = setInterval(async () => {
-      if (!chrome.runtime?.id) {
-        teardown();
-        return;
-      }
-      try {
-        if (currentRole === 'host') {
-          sendHostState('periodic');
-        }
-      } catch (err) {
-        if (err.message.includes('Extension context invalidated')) {
-          teardown();
-        } else {
-          console.error(err);
-        }
-      }
-    }, CONFIG.HOST_BROADCAST_INTERVAL);
+    // MARK: - Periodic Status Check Pollers (Implemented dynamically via startOrRestartIntervals)
 
     // MARK: - YouTube Navigation Listeners
     // Listen to custom YouTube navigation events to capture URL transitions
@@ -509,7 +578,7 @@ if (shouldInitialize) {
           videoElement.removeEventListener('pause', handleVideoEvent);
           videoElement.removeEventListener('seeked', handleVideoEvent);
           videoElement.hasSyncListeners = false;
-        } catch (e) {}
+        } catch (e) { }
       }
 
       // Remove document navigation listeners
@@ -517,18 +586,18 @@ if (shouldInitialize) {
         document.removeEventListener('yt-navigate-start', handleNavigationStart);
         document.removeEventListener('yt-navigate-finish', handleNavigationFinish);
         window.removeEventListener('load', handleWindowLoad);
-      } catch (e) {}
+      } catch (e) { }
 
       // Clean up storage listener
       try {
         chrome.storage.onChanged.removeListener(handleStorageChange);
-      } catch (e) {}
+      } catch (e) { }
 
       // Remove any active demotion toast
       try {
         const toast = document.getElementById('yt-sync-demotion-toast');
         if (toast) toast.remove();
-      } catch (e) {}
+      } catch (e) { }
 
       // Restore title
       isLocalFollowerPaused = false;
@@ -539,18 +608,10 @@ if (shouldInitialize) {
       window.hasYouTubeSyncLoaded = false;
       window.checkYouTubeSyncContext = null;
     }
-    // MARK: - Service Worker Keep-Alive Ping
-    // Periodically ping the background service worker to keep it alive or trigger reconnection
-    pingIntervalId = setInterval(() => {
-      if (!chrome.runtime?.id) {
-        teardown();
-        return;
-      }
-      chrome.runtime.sendMessage({ type: 'contentPing' }).catch((err) => {
-        if (err.message.includes('Extension context invalidated')) {
-          teardown();
-        }
-      });
-    }, CONFIG.KEEP_ALIVE_INTERVAL);
+    // Initial Load & Start Intervals
+    (async () => {
+      await syncConfigurations(false);
+      startOrRestartIntervals();
+    })();
   })();
 }

@@ -1,12 +1,79 @@
 // MARK: - State & Configurations
-const SERVER_URL = 'ws://yt-sync.viraj-homelab.online';
+let SERVER_URL = 'ws://yt-sync.viraj-homelab.online';
 
-const CONFIG = {
+let CONFIG = {
   HEARTBEAT_INTERVAL: 20000,      // Interval (ms) to send time sync / ping to server
   RECONNECT_DELAY_INITIAL: 1000,  // Starting delay (ms) for WebSocket reconnect attempts
   RECONNECT_DELAY_MAX: 10000,     // Cap (ms) on the reconnect exponential backoff
   DEFAULT_TRANSIT_ESTIMATE: 50    // Default network latency (ms) when NTP clock sync is unavailable
 };
+
+// Diagnostics & Metrics Variables
+let messagesSentCount = 0;
+let messagesReceivedCount = 0;
+let lastErrorMessage = '';
+let lastMessagePayload = null;
+
+async function syncConfigurations() {
+  const data = await chrome.storage.local.get([
+    'serverUrl',
+    'heartbeatInterval',
+    'reconnectDelayInitial',
+    'reconnectDelayMax',
+    'defaultTransitEstimate'
+  ]);
+
+  if (data.serverUrl && data.serverUrl !== SERVER_URL) {
+    console.log(`[YouTube Sync] Server URL updated from ${SERVER_URL} to ${data.serverUrl}. Reconnecting WebSocket...`);
+    SERVER_URL = data.serverUrl;
+    
+    const { enabled = false } = await chrome.storage.local.get('enabled');
+    if (enabled) {
+      if (ws) {
+        try {
+          ws.close();
+        } catch (e) {}
+      }
+      connect();
+    }
+  }
+
+  if (data.heartbeatInterval !== undefined) {
+    CONFIG.HEARTBEAT_INTERVAL = data.heartbeatInterval;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      startHeartbeat();
+    }
+  }
+  if (data.reconnectDelayInitial !== undefined) {
+    CONFIG.RECONNECT_DELAY_INITIAL = data.reconnectDelayInitial;
+  }
+  if (data.reconnectDelayMax !== undefined) {
+    CONFIG.RECONNECT_DELAY_MAX = data.reconnectDelayMax;
+  }
+  if (data.defaultTransitEstimate !== undefined) {
+    CONFIG.DEFAULT_TRANSIT_ESTIMATE = data.defaultTransitEstimate;
+  }
+}
+
+// Initial Sync
+syncConfigurations();
+
+// Listen to storage config changes in real-time
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === 'local') {
+    const keys = [
+      'serverUrl',
+      'heartbeatInterval',
+      'reconnectDelayInitial',
+      'reconnectDelayMax',
+      'defaultTransitEstimate'
+    ];
+    const hasConfigChange = keys.some(key => changes[key] !== undefined);
+    if (hasConfigChange) {
+      syncConfigurations();
+    }
+  }
+});
 
 let ws = null;
 let connectionStatus = 'disconnected';
@@ -113,8 +180,10 @@ async function connect() {
 
   ws.onmessage = async (event) => {
     try {
+      messagesReceivedCount++;
       const wsReceivedAt = Date.now();
       const message = JSON.parse(event.data);
+      lastMessagePayload = message;
       console.log('WebSocket message received:', message);
 
       if (message.type === 'syncState') {
@@ -159,8 +228,11 @@ async function connect() {
     }
   };
 
-  ws.onclose = () => {
+  ws.onclose = (event) => {
     console.log('WebSocket closed');
+    if (event && !event.wasClean) {
+      lastErrorMessage = `Closed uncleanly. Code: ${event.code}. Reason: ${event.reason || 'None'}`;
+    }
     setConnectionStatus('disconnected');
     hasSyncedTime = false; // Reset clock synchronization status
     stopHeartbeat();
@@ -169,6 +241,7 @@ async function connect() {
 
   ws.onerror = (err) => {
     console.error('WebSocket error:', err);
+    lastErrorMessage = err.message || 'WebSocket Error';
     setConnectionStatus('disconnected');
     stopHeartbeat();
   };
@@ -191,6 +264,7 @@ async function scheduleReconnect() {
 
 function sendWSMessage(data) {
   if (ws && ws.readyState === WebSocket.OPEN) {
+    messagesSentCount++;
     ws.send(JSON.stringify(data));
   } else {
     console.warn('WebSocket not open. Cannot send:', data);
@@ -449,6 +523,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ isSyncing });
     });
     return true;
+  } else if (message.type === 'forceReconnect') {
+    console.log('Forced reconnect triggered from options page.');
+    if (ws) {
+      try {
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+        ws.close();
+      } catch (e) {}
+    }
+    connect();
+    sendResponse({ ack: true });
+  } else if (message.type === 'resetCounters') {
+    messagesSentCount = 0;
+    messagesReceivedCount = 0;
+    lastErrorMessage = '';
+    lastMessagePayload = null;
+    sendResponse({ ack: true });
+  } else if (message.type === 'getInternalState') {
+    sendResponse({
+      connectionStatus,
+      syncTabId,
+      lastKnownHostUrl,
+      serverTimeOffset,
+      hasSyncedTime,
+      stats: {
+        sent: messagesSentCount,
+        received: messagesReceivedCount,
+        lastError: lastErrorMessage,
+        lastMessage: lastMessagePayload
+      }
+    });
   }
   return true; // Keep channel open for async response
 });

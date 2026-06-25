@@ -1,35 +1,67 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <title>YouTube Sync</title>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg-color: #0b0f19;
-      --panel-bg: rgba(255, 255, 255, 0.05);
-      --border-color: rgba(255, 255, 255, 0.1);
-      --text-primary: #f3f4f6;
-      --text-secondary: #9ca3af;
+      /* Light Theme (default) */
+      --bg-color: #ffffff;
+      --panel-bg: rgba(0, 0, 0, 0.02);
+      --border-color: rgba(0, 0, 0, 0.08);
+      --text-primary: #171717;
+      --text-secondary: #737373;
       --accent-color: #3b82f6;
       --accent-hover: #2563eb;
       --success-color: #10b981;
       --danger-color: #ef4444;
       --warning-color: #f59e0b;
+      --btn-active-bg: #eff6ff;
+      --btn-active-border: #3b82f6;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        /* Dark Theme: full black background */
+        --bg-color: #000000;
+        --panel-bg: rgba(255, 255, 255, 0.04);
+        --border-color: rgba(255, 255, 255, 0.12);
+        --text-primary: #f5f5f5;
+        --text-secondary: #a3a3a3;
+        --accent-color: #3b82f6;
+        --accent-hover: #60a5fa;
+        --success-color: #10b981;
+        --danger-color: #ef4444;
+        --warning-color: #f59e0b;
+        --btn-active-bg: #172554;
+        --btn-active-border: #3b82f6;
+      }
+    }
+
+    html {
+      background-color: var(--bg-color);
+      border-radius: 12px;
+      overflow: hidden;
     }
 
     body {
       margin: 0;
-      padding: 16px;
-      width: 280px;
+      padding: 20px;
+      width: 290px;
       background-color: var(--bg-color);
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-family: 'Nunito', sans-serif;
       color: var(--text-primary);
+      font-size: 14px;
+      border-radius: 12px;
+      overflow: hidden;
     }
 
     .container {
       display: flex;
       flex-direction: column;
-      gap: 16px;
+      gap: 20px;
     }
 
     .header {
@@ -37,28 +69,24 @@
       align-items: center;
       justify-content: space-between;
       border-bottom: 1px solid var(--border-color);
-      padding-bottom: 10px;
+      padding-bottom: 12px;
     }
 
     .title {
-      font-size: 16px;
+      font-size: 18px;
       font-weight: 700;
-      letter-spacing: -0.025em;
       margin: 0;
-      background: linear-gradient(to right, #60a5fa, #3b82f6);
-      -webkit-background-clip: text;
-      background-clip: text;
-      -webkit-text-fill-color: transparent;
+      color: var(--text-primary);
     }
 
     .status-badge {
       display: flex;
       align-items: center;
       gap: 6px;
-      font-size: 11px;
-      font-weight: 500;
-      padding: 4px 8px;
-      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 14px;
       background: var(--panel-bg);
       border: 1px solid var(--border-color);
     }
@@ -72,7 +100,7 @@
 
     .status-dot.connected {
       background-color: var(--success-color);
-      box-shadow: 0 0 8px var(--success-color);
+      box-shadow: 0 0 6px var(--success-color);
     }
 
     .status-dot.connecting {
@@ -81,87 +109,105 @@
     }
 
     @keyframes pulse {
-      0%, 100% { opacity: 0.4; }
-      50% { opacity: 1; }
+
+      0%,
+      100% {
+        opacity: 0.4;
+      }
+
+      50% {
+        opacity: 1;
+      }
     }
 
     .card {
       background: var(--panel-bg);
-      backdrop-filter: blur(10px);
-      -webkit-backdrop-filter: blur(10px);
       border: 1px solid var(--border-color);
-      border-radius: 12px;
-      padding: 12px;
+      border-radius: 14px;
+      padding: 16px;
     }
 
     .section-title {
       font-size: 12px;
-      font-weight: 600;
+      font-weight: 700;
       color: var(--text-secondary);
       text-transform: uppercase;
       margin-top: 0;
-      margin-bottom: 10px;
+      margin-bottom: 12px;
       letter-spacing: 0.05em;
     }
 
     .role-selector {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 8px;
+      gap: 12px;
+      padding: 4px 0;
     }
 
     .role-btn {
-      background: transparent;
+      position: relative;
+      background: rgba(255, 255, 255, 0.01);
       border: 1px solid var(--border-color);
       color: var(--text-secondary);
-      padding: 10px;
-      border-radius: 8px;
+      padding: 12px 14px;
+      border-radius: 12px;
       cursor: pointer;
-      font-weight: 600;
+      font-family: inherit;
+      font-weight: 700;
       font-size: 13px;
-      transition: all 0.2s ease;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
       display: flex;
       flex-direction: column;
       align-items: center;
       gap: 4px;
+      overflow: visible;
+      z-index: 1;
     }
 
     .role-btn:hover {
-      background: rgba(255, 255, 255, 0.03);
       color: var(--text-primary);
+      border-color: rgba(255, 255, 255, 0.15);
+      background: var(--panel-bg);
     }
 
     .role-btn.active {
-      border-color: var(--accent-color);
-      background: rgba(59, 130, 246, 0.1);
-      color: var(--accent-color);
-      box-shadow: 0 0 12px rgba(59, 130, 246, 0.15);
+      color: var(--text-primary);
+      background: var(--btn-active-bg);
+      border-color: var(--btn-active-border);
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
     }
+
 
     .role-desc {
       font-size: 10px;
       font-weight: 400;
       color: var(--text-secondary);
       text-align: center;
+      transition: color 0.3s ease;
     }
 
     .role-btn.active .role-desc {
-      color: rgba(59, 130, 246, 0.8);
+      color: var(--text-secondary);
     }
 
     .toggle-container {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      font-size: 13px;
-      font-weight: 600;
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-primary);
+      padding: 4px 0 16px 0;
+      border-bottom: 1px solid var(--border-color);
     }
 
     .switch {
       position: relative;
       display: inline-block;
-      width: 44px;
-      height: 24px;
+      width: 38px;
+      height: 20px;
     }
 
     .switch input {
@@ -177,61 +223,60 @@
       left: 0;
       right: 0;
       bottom: 0;
-      background-color: rgba(255, 255, 255, 0.1);
-      transition: .2s;
-      border: 1px solid var(--border-color);
+      background-color: var(--border-color);
+      transition: .25s;
+      border-radius: 20px;
     }
 
     .slider:before {
       position: absolute;
       content: "";
-      height: 16px;
-      width: 16px;
+      height: 14px;
+      width: 14px;
       left: 3px;
       bottom: 3px;
       background-color: var(--text-secondary);
-      transition: .2s;
-    }
-
-    input:checked + .slider {
-      background-color: rgba(59, 130, 246, 0.2);
-      border-color: var(--accent-color);
-    }
-
-    input:checked + .slider:before {
-      transform: translateX(20px);
-      background-color: var(--accent-color);
-    }
-
-    .slider.round {
-      border-radius: 24px;
-    }
-
-    .slider.round:before {
+      transition: .25s;
       border-radius: 50%;
     }
 
-    .card.disabled {
-      opacity: 0.4;
+    input:checked+.slider {
+      background-color: var(--accent-color);
+    }
+
+    input:checked+.slider:before {
+      transform: translateX(18px);
+      background-color: #ffffff;
+    }
+
+    #role-card.disabled {
+      opacity: 0.5;
       pointer-events: none;
     }
 
     .follower-notice {
       margin-top: 12px;
-      padding: 8px;
+      padding: 10px;
       background: rgba(245, 158, 11, 0.1);
       border: 1px solid rgba(245, 158, 11, 0.2);
-      border-radius: 6px;
+      border-radius: 10px;
       color: var(--warning-color);
-      font-size: 11px;
+      font-size: 12px;
       text-align: center;
-      font-weight: 500;
+      font-weight: 600;
       animation: fadeIn 0.3s ease-in-out;
     }
 
     @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(-4px); }
-      to { opacity: 1; transform: translateY(0); }
+      from {
+        opacity: 0;
+        transform: translateY(-4px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
 
     .warning-container {
@@ -248,7 +293,7 @@
     }
 
     .warning-text {
-      font-size: 12px;
+      font-size: 13px;
       line-height: 1.4;
       color: var(--text-secondary);
     }
@@ -260,7 +305,7 @@
     }
 
     .sync-tab-title-label {
-      font-size: 10px;
+      font-size: 11px;
       font-weight: 600;
       color: var(--text-secondary);
       text-transform: uppercase;
@@ -271,11 +316,11 @@
     .sync-tab-row {
       display: flex;
       align-items: center;
-      gap: 8px;
-      background: rgba(255, 255, 255, 0.02);
+      gap: 10px;
+      background: var(--panel-bg);
       border: 1px solid var(--border-color);
-      border-radius: 6px;
-      padding: 8px;
+      border-radius: 10px;
+      padding: 10px;
     }
 
     .youtube-icon {
@@ -283,8 +328,8 @@
     }
 
     .sync-tab-title {
-      font-size: 12px;
-      font-weight: 500;
+      font-size: 13px;
+      font-weight: 600;
       color: var(--text-primary);
       white-space: nowrap;
       overflow: hidden;
@@ -293,12 +338,13 @@
     }
 
     .footer {
-      font-size: 10px;
+      font-size: 11px;
       text-align: center;
       color: var(--text-secondary);
     }
   </style>
 </head>
+
 <body>
   <div class="container">
     <div class="header">
@@ -309,17 +355,15 @@
       </div>
     </div>
 
-    <div class="card">
-      <div class="toggle-container">
-        <span>Enable Synchronization</span>
-        <label class="switch">
-          <input type="checkbox" id="sync-enable-toggle">
-          <span class="slider round"></span>
-        </label>
-      </div>
+    <div class="toggle-container">
+      <span>Enable Synchronization</span>
+      <label class="switch">
+        <input type="checkbox" id="sync-enable-toggle">
+        <span class="slider round"></span>
+      </label>
     </div>
 
-    <div class="card" id="role-card">
+    <div id="role-card">
       <h2 class="section-title">Select Sync Role</h2>
       <div class="role-selector">
         <button id="btn-host" class="role-btn">
@@ -345,7 +389,8 @@
         <div class="sync-tab-title-label">Active Syncing Tab:</div>
         <div class="sync-tab-row">
           <svg class="youtube-icon" viewBox="0 0 24 24" width="16" height="16">
-            <path fill="#ef4444" d="M23.498 6.163a3.003 3.003 0 0 0-2.11-2.11C19.518 3.545 12 3.545 12 3.545s-7.518 0-9.388.508a3.003 3.003 0 0 0-2.11 2.11C0 8.033 0 12 0 12s0 3.967.502 5.837a3.003 3.003 0 0 0 2.11 2.11c1.87.508 9.388.508 9.388.508s7.518 0 9.388-.508a3.003 3.003 0 0 0 2.11-2.11C24 15.967 24 12 24 12s0-3.967-.502-5.837zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+            <path fill="#ef4444"
+              d="M23.498 6.163a3.003 3.003 0 0 0-2.11-2.11C19.518 3.545 12 3.545 12 3.545s-7.518 0-9.388.508a3.003 3.003 0 0 0-2.11 2.11C0 8.033 0 12 0 12s0 3.967.502 5.837a3.003 3.003 0 0 0 2.11 2.11c1.87.508 9.388.508 9.388.508s7.518 0 9.388-.508a3.003 3.003 0 0 0 2.11-2.11C24 15.967 24 12 24 12s0-3.967-.502-5.837zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
           </svg>
           <span id="sync-tab-title" class="sync-tab-title">YouTube Video Title</span>
         </div>
@@ -358,4 +403,5 @@
   </div>
   <script src="popup.js"></script>
 </body>
+
 </html>

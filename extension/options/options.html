@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>YouTube Sync - Options & Diagnostics</title>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      /* Light Theme (default) */
+      --bg-color: #ffffff;
+      --card-bg: rgba(0, 0, 0, 0.015);
+      --card-border: rgba(0, 0, 0, 0.08);
+      --input-bg: #fafafa;
+      --input-border: rgba(0, 0, 0, 0.12);
+      --text-primary: #171717;
+      --text-secondary: #737373;
+      --accent-color: #3b82f6;
+      --accent-hover: #2563eb;
+      --success-color: #10b981;
+      --danger-color: #ef4444;
+      --warning-color: #f59e0b;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        /* Dark Theme: full black background */
+        --bg-color: #000000;
+        --card-bg: rgba(255, 255, 255, 0.04);
+        --card-border: rgba(255, 255, 255, 0.1);
+        --input-bg: #0c0c0c;
+        --input-border: rgba(255, 255, 255, 0.14);
+        --text-primary: #f5f5f5;
+        --text-secondary: #a3a3a3;
+        --accent-color: #3b82f6;
+        --accent-hover: #60a5fa;
+        --success-color: #10b981;
+        --danger-color: #ef4444;
+        --warning-color: #f59e0b;
+      }
+    }
+
+    body {
+      margin: 0;
+      padding: 32px 16px;
+      background-color: var(--bg-color);
+      background-image: radial-gradient(circle at top right, rgba(59, 130, 246, 0.03), transparent 600px);
+      font-family: 'Nunito', sans-serif;
+      color: var(--text-primary);
+      min-height: 100vh;
+      box-sizing: border-box;
+    }
+
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 20px;
+    }
+
+    .header-left h1 {
+      margin: 0 0 6px 0;
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: -0.02em;
+    }
+
+    .header-left p {
+      margin: 0;
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 24px;
+    }
+
+    @media (max-width: 768px) {
+      .main-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.02);
+    }
+
+    .card-title {
+      margin-top: 0;
+      margin-bottom: 20px;
+      font-size: 16px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-primary);
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 12px;
+    }
+
+    .form-group {
+      margin-bottom: 18px;
+    }
+
+    .form-group.row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .input-desc {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+      line-height: 1.4;
+    }
+
+    input[type="text"], input[type="number"], textarea {
+      width: 100%;
+      box-sizing: border-box;
+      background: var(--input-bg);
+      border: 1px solid var(--input-border);
+      border-radius: 10px;
+      color: var(--text-primary);
+      padding: 10px 12px;
+      font-family: inherit;
+      font-size: 13px;
+      outline: none;
+      transition: all 0.2s ease;
+    }
+
+    input:focus, textarea:focus {
+      border-color: var(--accent-color);
+      box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+    }
+
+    .btn {
+      background: var(--accent-color);
+      border: none;
+      color: #ffffff;
+      padding: 12px 24px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-family: inherit;
+      font-weight: 700;
+      font-size: 13px;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .btn:hover {
+      background: var(--accent-hover);
+    }
+
+    .btn-secondary {
+      background: var(--card-bg);
+      color: var(--text-primary);
+      border: 1px solid var(--card-border);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(120, 120, 120, 0.08);
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--success-color);
+      color: #ffffff;
+      padding: 12px 24px;
+      border-radius: 10px;
+      font-weight: 700;
+      font-size: 13px;
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2);
+      transform: translateY(100px);
+      opacity: 0;
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      z-index: 9999;
+    }
+
+    .toast.show {
+      transform: translateY(0);
+      opacity: 1;
+    }
+
+    /* Diagnostics Styles */
+    .status-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .metric-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--card-border);
+    }
+
+    .metric-row:last-child {
+      border-bottom: none;
+    }
+
+    .metric-label {
+      font-size: 13px;
+      color: var(--text-secondary);
+      font-weight: 600;
+    }
+
+    .metric-value {
+      font-size: 13px;
+      font-weight: 700;
+      font-family: inherit;
+      color: var(--text-primary);
+      max-width: 200px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .badge {
+      padding: 6px 12px;
+      border-radius: 16px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .badge-disconnected {
+      background: rgba(239, 68, 68, 0.1);
+      color: var(--danger-color);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+    }
+
+    .badge-connecting {
+      background: rgba(245, 158, 11, 0.1);
+      color: var(--warning-color);
+      border: 1px solid rgba(245, 158, 11, 0.2);
+      animation: blink 1.5s infinite;
+    }
+
+    .badge-connected {
+      background: rgba(16, 185, 129, 0.1);
+      color: var(--success-color);
+      border: 1px solid rgba(16, 185, 129, 0.2);
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 0.6; }
+      50% { opacity: 1; }
+    }
+
+    .control-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-top: 20px;
+    }
+
+    .section-divider {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent-color);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin: 20px 0 10px 0;
+      border-bottom: 1px dashed var(--card-border);
+      padding-bottom: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="header-left">
+        <h1>YouTube Sync - Settings & Diagnostics</h1>
+        <p>Manage connection parameters and inspect real-time sync performance.</p>
+      </div>
+      <button id="btn-save-top" class="btn">Save Settings</button>
+    </header>
+
+    <div class="main-grid">
+      <!-- Left Column: Settings Form -->
+      <form id="settings-form" class="card">
+        <div class="card-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+          Configuration Knobs
+        </div>
+
+        <div class="section-divider" style="margin-top: 0;">Connection Settings</div>
+        
+        <div class="form-group">
+          <label for="serverUrl">WebSocket Server URL</label>
+          <input type="text" id="serverUrl" required placeholder="ws://example.com">
+          <div class="input-desc">The relay server address used for synchronization events.</div>
+        </div>
+
+        <div class="section-divider">Follower Sync Variables</div>
+
+        <div class="form-group row">
+          <div>
+            <label for="driftThreshold">Drift Threshold (seconds)</label>
+            <input type="number" id="driftThreshold" step="0.05" min="0.05" required>
+            <div class="input-desc">Maximum delay difference allowed before forcing Follower seeking.</div>
+          </div>
+          <div>
+            <label for="followerSyncThrottle">Follower Sync Throttle (ms)</label>
+            <input type="number" id="followerSyncThrottle" step="100" min="100" required>
+            <div class="input-desc">Cooldown between consecutive video mutations (play/pause/seek) on Follower.</div>
+          </div>
+        </div>
+
+        <div class="form-group row">
+          <div>
+            <label for="domPollInterval">DOM Check Interval (ms)</label>
+            <input type="number" id="domPollInterval" step="50" min="100" required>
+            <div class="input-desc">Periodic interval to search for video elements and enforce playback sync.</div>
+          </div>
+          <div>
+            <label for="keepAliveInterval">Keep-Alive Ping Interval (ms)</label>
+            <input type="number" id="keepAliveInterval" step="100" min="500" required>
+            <div class="input-desc">Interval to ping background worker to prevent deactivation.</div>
+          </div>
+        </div>
+
+        <div class="section-divider">Host Broadcast Variables</div>
+
+        <div class="form-group row">
+          <div>
+            <label for="hostBroadcastInterval">Broadcast Interval (ms)</label>
+            <input type="number" id="hostBroadcastInterval" step="50" min="100" required>
+            <div class="input-desc">Periodic interval for Host to send state updates.</div>
+          </div>
+          <div>
+            <label for="throttleThreshold">Host Throttle Limit (ms)</label>
+            <input type="number" id="throttleThreshold" step="50" min="50" required>
+            <div class="input-desc">Throttling duration applied to consecutive periodic updates from Host.</div>
+          </div>
+        </div>
+
+        <div class="section-divider">Background & NTP Sync</div>
+
+        <div class="form-group row">
+          <div>
+            <label for="heartbeatInterval">Heartbeat/Sync Interval (ms)</label>
+            <input type="number" id="heartbeatInterval" step="1000" min="5000" required>
+            <div class="input-desc">NTP clock sync update and keep-alive ping interval to server.</div>
+          </div>
+          <div>
+            <label for="defaultTransitEstimate">Transit Latency Est. (ms)</label>
+            <input type="number" id="defaultTransitEstimate" step="5" min="0" required>
+            <div class="input-desc">Assumed network delay estimation if NTP clock sync has not finished.</div>
+          </div>
+        </div>
+
+        <div class="form-group row">
+          <div>
+            <label for="reconnectDelayInitial">Initial Reconnect Delay (ms)</label>
+            <input type="number" id="reconnectDelayInitial" step="100" min="100" required>
+            <div class="input-desc">Initial backoff delay before WebSocket reconnection attempts.</div>
+          </div>
+          <div>
+            <label for="reconnectDelayMax">Max Reconnect Delay (ms)</label>
+            <input type="number" id="reconnectDelayMax" step="500" min="1000" required>
+            <div class="input-desc">Upper cap on exponential reconnection backoff.</div>
+          </div>
+        </div>
+
+        <div style="margin-top: 30px; display: flex; gap: 12px;">
+          <button type="submit" class="btn">Save Configurations</button>
+          <button type="button" id="btn-reset-defaults" class="btn btn-secondary">Reset to Defaults</button>
+        </div>
+      </form>
+
+      <!-- Right Column: Diagnostics & Action Panel -->
+      <div style="display: flex; flex-direction: column; gap: 24px;">
+        <!-- Real-Time Metrics -->
+        <div class="card">
+          <div class="card-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>
+            </svg>
+            Live Diagnostics
+          </div>
+
+          <div class="status-panel">
+            <div class="metric-row">
+              <span class="metric-label">WS Connection Status</span>
+              <span id="diagnostic-status" class="badge badge-disconnected">Checking...</span>
+            </div>
+
+            <div class="metric-row">
+              <span class="metric-label">Clock Sync NTP Offset</span>
+              <span id="diagnostic-offset" class="metric-value">0ms (uncalibrated)</span>
+            </div>
+
+            <div class="metric-row">
+              <span class="metric-label">Messages Sent</span>
+              <span id="diagnostic-sent" class="metric-value">0</span>
+            </div>
+
+            <div class="metric-row">
+              <span class="metric-label">Messages Received</span>
+              <span id="diagnostic-received" class="metric-value">0</span>
+            </div>
+
+            <div class="metric-row">
+              <span class="metric-label">Sync Target Tab ID</span>
+              <span id="diagnostic-tab-id" class="metric-value">None</span>
+            </div>
+
+            <div class="metric-row">
+              <span class="metric-label">Last Known Host URL</span>
+              <span id="diagnostic-host-url" class="metric-value" title="None">None</span>
+            </div>
+
+            <div class="metric-row">
+              <span class="metric-label">Last Error</span>
+              <span id="diagnostic-last-error" class="metric-value" style="color: var(--danger-color);" title="None">None</span>
+            </div>
+
+            <div class="metric-row" style="flex-direction: column; align-items: flex-start; gap: 8px;">
+              <span class="metric-label">Last WebSocket Payload</span>
+              <textarea id="diagnostic-last-payload" readonly style="width: 100%; height: 60px; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 10px; font-family: monospace; font-size: 11px; color: var(--text-secondary); padding: 8px; resize: none; box-sizing: border-box; outline: none;"></textarea>
+            </div>
+          </div>
+        </div>
+
+        <!-- Connection Management Actions -->
+        <div class="card">
+          <div class="card-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="23 4 23 10 17 10"></polyline>
+              <polyline points="1 20 1 14 7 14"></polyline>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+            </svg>
+            System Operations
+          </div>
+          
+          <div class="control-actions">
+            <button id="btn-reconnect" class="btn btn-secondary" style="width: 100%;">
+              Reload WebSocket Connection
+            </button>
+            <button id="btn-clear-stats" class="btn btn-secondary" style="width: 100%;">
+              Reset Counters
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast">Settings Saved Successfully!</div>
+  
+  <script src="options.js"></script>
+</body>
+</html>

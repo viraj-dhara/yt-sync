@@ -78,7 +78,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (isEnabled && !isYT) {
       // Prevent enabling sync from a non-YouTube page
       syncToggle.checked = false;
-      alert("Please open a youtube.com tab before enabling synchronization.");
+      showWarningToast("Please open a youtube.com tab to start syncing.");
       return;
     }
 
@@ -203,6 +203,81 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else {
       followerNotice.style.display = 'none';
     }
+  }
+
+  function showWarningToast(message) {
+    let toast = document.getElementById('yt-sync-warning-toast');
+    if (toast) toast.remove();
+
+    toast = document.createElement('div');
+    toast.id = 'yt-sync-warning-toast';
+    toast.style.position = 'fixed';
+    toast.style.bottom = '12px';
+    toast.style.left = '12px';
+    toast.style.right = '12px';
+    toast.style.backgroundColor = '#ef4444';
+    toast.style.color = '#ffffff';
+    toast.style.padding = '10px 14px';
+    toast.style.borderRadius = '10px';
+    toast.style.fontFamily = 'inherit';
+    toast.style.fontSize = '12px';
+    toast.style.fontWeight = '700';
+    toast.style.boxShadow = '0 10px 15px -3px rgba(0, 0, 0, 0.2)';
+    toast.style.zIndex = '999999';
+    toast.style.transition = 'opacity 0.25s ease, transform 0.25s ease';
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateY(15px)';
+    toast.style.display = 'flex';
+    toast.style.alignItems = 'center';
+    toast.style.justifyContent = 'space-between';
+    toast.style.gap = '8px';
+
+    const content = document.createElement('div');
+    content.style.display = 'flex';
+    content.style.alignItems = 'center';
+    content.style.gap = '8px';
+
+    const icon = document.createElement('span');
+    icon.textContent = '⚠️';
+    icon.style.fontSize = '14px';
+    content.appendChild(icon);
+
+    const text = document.createElement('span');
+    text.textContent = message;
+    content.appendChild(text);
+    toast.appendChild(content);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '✕';
+    closeBtn.style.background = 'none';
+    closeBtn.style.border = 'none';
+    closeBtn.style.color = '#ffffff';
+    closeBtn.style.cursor = 'pointer';
+    closeBtn.style.fontSize = '14px';
+    closeBtn.style.padding = '0 4px';
+    closeBtn.style.fontFamily = 'inherit';
+    closeBtn.style.fontWeight = '700';
+    closeBtn.addEventListener('click', () => {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateY(15px)';
+      setTimeout(() => toast.remove(), 250);
+    });
+    toast.appendChild(closeBtn);
+
+    document.body.appendChild(toast);
+
+    setTimeout(() => {
+      toast.style.opacity = '1';
+      toast.style.transform = 'translateY(0)';
+    }, 50);
+
+    setTimeout(() => {
+      if (document.body.contains(toast)) {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(15px)';
+        setTimeout(() => toast.remove(), 250);
+      }
+    }, 5000);
   }
 
   // Run immediately and poll every 1s while popup is open

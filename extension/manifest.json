@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "minimum_chrome_version": "116",
   "name": "YouTube Sync",
-  "version": "0.0.6",
+  "version": "0.0.8",
   "description": "Synchronize YouTube playback and navigation between friends.",
   "permissions": [
     "storage",
@@ -19,6 +19,10 @@
   "background": {
     "service_worker": "background.js",
     "type": "module"
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
   },
   "action": {
     "default_popup": "popup/popup.html",
