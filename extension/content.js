@@ -51,6 +51,11 @@ if (shouldInitialize) {
     let isLocalFollowerPaused = false;
     let isProgrammaticAction = false;
 
+    // Page load & navigation transition tracking for Follower jitter prevention
+    let currentUrl = window.location.href;
+    let urlChangedAt = document.readyState !== 'complete' ? Date.now() : 0;
+    let isNavigating = document.readyState !== 'complete';
+
     // MARK: - DOM Elements & Event Setups
     // Find the video element on the page
     function findVideoElement() {
@@ -150,6 +155,14 @@ if (shouldInitialize) {
         return;
       }
       try {
+        // Backup URL change detection
+        if (window.location.href !== currentUrl) {
+          console.log(`[YouTube Sync] URL change detected in poll. Old: ${currentUrl}, New: ${window.location.href}`);
+          currentUrl = window.location.href;
+          urlChangedAt = Date.now();
+          isNavigating = true;
+        }
+
         // Check if this tab is actively syncing and update title accordingly
         const response = await chrome.runtime.sendMessage({ type: 'checkIsSyncingTab' }).catch(() => null);
         const syncActive = response ? response.isSyncing : false;
@@ -204,7 +217,28 @@ if (shouldInitialize) {
     function handleNavigationEvent() {
       handleVideoEvent({ type: 'navigate' });
     }
-    document.addEventListener('yt-navigate-finish', handleNavigationEvent);
+
+    function handleNavigationStart() {
+      isNavigating = true;
+      urlChangedAt = Date.now();
+      currentUrl = window.location.href;
+      console.log('[YouTube Sync] YouTube navigation started. URL:', currentUrl);
+    }
+
+    function handleNavigationFinish() {
+      isNavigating = false;
+      console.log('[YouTube Sync] YouTube navigation finished.');
+      handleNavigationEvent();
+    }
+
+    function handleWindowLoad() {
+      isNavigating = false;
+      console.log('[YouTube Sync] Page load complete.');
+    }
+
+    document.addEventListener('yt-navigate-start', handleNavigationStart);
+    document.addEventListener('yt-navigate-finish', handleNavigationFinish);
+    window.addEventListener('load', handleWindowLoad);
 
 
     // MARK: - Extension Message Receivers
@@ -229,6 +263,12 @@ if (shouldInitialize) {
     function applyFollowerSync(payload, wsReceivedAt = null) {
       const video = findVideoElement();
       if (!video) return;
+
+      // Jitter prevention: wait at least 2 seconds and until page loads after URL change/init
+      const timeSinceUrlChange = Date.now() - urlChangedAt;
+      if (timeSinceUrlChange < 2000 || document.readyState !== 'complete' || (isNavigating && timeSinceUrlChange < 10000)) {
+        return;
+      }
 
       const { state, currentTime, sentAt, updatedAt } = payload;
 
@@ -330,8 +370,10 @@ if (shouldInitialize) {
         videoElement.hasSyncListeners = false;
       }
 
-      // Remove document navigation listener
-      document.removeEventListener('yt-navigate-finish', handleNavigationEvent);
+      // Remove document navigation listeners
+      document.removeEventListener('yt-navigate-start', handleNavigationStart);
+      document.removeEventListener('yt-navigate-finish', handleNavigationFinish);
+      window.removeEventListener('load', handleWindowLoad);
 
       // Restore title
       isLocalFollowerPaused = false;

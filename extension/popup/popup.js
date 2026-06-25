@@ -15,7 +15,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   updateToggleUI(enabled);
 
   // Get active tab info to check if it's YouTube
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   const isYouTube = tab && tab.url && tab.url.includes('youtube.com');
   const warningCard = document.getElementById('warning-card');
 
@@ -72,7 +72,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const isEnabled = syncToggle.checked;
 
     // Check if we are on a YouTube tab
-    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     const isYT = activeTab && activeTab.url && activeTab.url.includes('youtube.com');
 
     if (isEnabled && !isYT) {
@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Auto-inject script immediately if enabled on a YouTube page
     if (isEnabled) {
       try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
         if (tab && tab.url && tab.url.includes('youtube.com')) {
           await chrome.scripting.executeScript({
             target: { tabId: tab.id },

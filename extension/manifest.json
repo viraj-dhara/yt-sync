@@ -3,7 +3,7 @@
   "minimum_chrome_version": "116",
   "name": "YouTube Sync",
   "version": "0.0.5",
-  "description": "Synchronize YouTube playback and navigation between clients.",
+  "description": "Synchronize YouTube playback and navigation between friends.",
   "permissions": [
     "storage",
     "tabs",

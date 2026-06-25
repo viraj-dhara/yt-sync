@@ -78,6 +78,10 @@ async function connect() {
 
   if (ws) {
     try {
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
       ws.close();
     } catch (e) { }
   }
@@ -249,27 +253,44 @@ async function handleFollowerSync(payload, wsReceivedAt = null) {
 }
 
 
-// MARK: - Content Script Auto-Injection
+// MARK: - Content Script Auto-Injection & Tab Trackers
 
-// Automatically re-inject content script when the synced tab navigates/reloads.
-// Since the extension does not declare static content script match patterns (to avoid CWS host permission prompt),
-// we must programmatically inject content.js.
-// When the sync tab navigates to a new video (triggering a page reload) or is newly created,
-// the previous content script context is destroyed.
-// This listener detects when the tab has finished loading ('complete' status) and executes the injection.
-// The activeTab permission remains active for this tab as long as the origin (youtube.com) does not change.
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (tabId === syncTabId && changeInfo.status === 'complete') {
+// Automatically track the active YouTube tab and inject content.js if sync is enabled.
+// This ensures the current YouTube tab the user is looking at becomes the sync focus
+// and receives content.js injection immediately without needing an ON/OFF toggle cycle.
+async function handleTabActivationOrUpdate(tabId) {
+  try {
     const { enabled = false } = await chrome.storage.local.get('enabled');
     if (!enabled) return;
 
-    console.log('Sync tab reloaded/navigated, injecting content script...');
-    chrome.scripting.executeScript({
-      target: { tabId: tabId },
-      files: ['content.js']
-    }).catch((err) => {
-      console.warn('Failed to auto-inject content script on tab update:', err);
-    });
+    const tab = await chrome.tabs.get(tabId);
+    if (tab && tab.url && tab.url.includes('youtube.com')) {
+      if (syncTabId !== tabId) {
+        console.log(`[YouTube Sync] Switching active sync tab to ${tabId}`);
+        syncTabId = tabId;
+      }
+      console.log(`[YouTube Sync] Auto-injecting content script into YouTube tab ${tabId}...`);
+      await chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        files: ['content.js']
+      }).catch((err) => {
+        console.warn(`[YouTube Sync] Failed to inject content script into tab ${tabId}:`, err.message);
+      });
+    }
+  } catch (err) {
+    // Suppress tab access errors
+  }
+}
+
+// Listen for tab focus changes
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  handleTabActivationOrUpdate(activeInfo.tabId);
+});
+
+// Listen for tab updates/loads
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'complete') {
+    handleTabActivationOrUpdate(tabId);
   }
 });
 
@@ -282,6 +303,10 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
     // Tear down WebSocket connection
     if (ws) {
       try {
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
         ws.close();
       } catch (e) {}
     }
@@ -314,6 +339,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else {
       if (ws) {
         try {
+          ws.onopen = null;
+          ws.onmessage = null;
+          ws.onerror = null;
+          ws.onclose = null;
           ws.close();
         } catch (e) { }
       }

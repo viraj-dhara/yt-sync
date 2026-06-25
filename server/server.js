@@ -46,20 +46,23 @@ wss.on('connection', (ws) => {
   ws.on('pong', () => {
     ws.isAlive = true;
   });
-  
+
   // Assign a temporary role as follower until they register
   ws.role = 'follower';
 
-  // Send the current global state immediately on connection
-  ws.send(JSON.stringify({
-    type: 'syncState',
-    payload: globalState
-  }));
+  // Send the current global state immediately on connection if there is an active host and the state is fresh
+  const isStateFresh = globalState.currentUrl && (Date.now() - globalState.updatedAt < 20000);
+  if (hostSocket && isStateFresh) {
+    ws.send(JSON.stringify({
+      type: 'syncState',
+      payload: globalState
+    }));
+  }
 
   ws.on('message', (messageText) => {
     try {
       const message = JSON.parse(messageText);
-      
+
       switch (message.type) {
         case 'setRole':
           if (message.role === 'host') {
@@ -104,7 +107,7 @@ wss.on('connection', (ws) => {
             });
           }
           break;
-        
+
         case 'timeSync':
           ws.send(JSON.stringify({
             type: 'timeSyncResponse',
@@ -132,6 +135,7 @@ wss.on('connection', (ws) => {
     if (ws === hostSocket) {
       hostSocket = null;
       console.log('Host disconnected');
+      globalState.currentUrl = ''; // Clear stored state URL when host departs
     }
   });
 
