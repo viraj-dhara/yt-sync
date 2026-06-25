@@ -105,6 +105,16 @@ wss.on('connection', (ws) => {
           }
           break;
         
+        case 'timeSync':
+          ws.send(JSON.stringify({
+            type: 'timeSyncResponse',
+            payload: {
+              clientTime: message.payload.clientTime,
+              serverTime: Date.now()
+            }
+          }));
+          break;
+
         case 'ping':
           // Silent heartbeat response to keep connection alive
           break;

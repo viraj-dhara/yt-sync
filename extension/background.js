@@ -9,6 +9,10 @@ let heartbeatInterval = null;
 // Track follower's sync tab ID
 let syncTabId = null;
 
+// Clock synchronization offsets (NTP-like algorithm)
+let serverTimeOffset = 0;
+let hasSyncedTime = false;
+
 
 // MARK: - Initialization
 
@@ -36,6 +40,14 @@ function startHeartbeat() {
   stopHeartbeat();
   heartbeatInterval = setInterval(() => {
     if (ws && ws.readyState === WebSocket.OPEN) {
+      // Send time sync to recalibrate and keep active
+      sendWSMessage({
+        type: 'timeSync',
+        payload: {
+          clientTime: Date.now()
+        }
+      });
+      // Send ping for backward compatibility with older servers
       sendWSMessage({ type: 'ping' });
     }
   }, 20000); // Send ping every 20 seconds to keep MV3 Service Worker active
@@ -76,6 +88,14 @@ async function connect() {
     // Send role registration immediately
     const { role = 'follower' } = await chrome.storage.local.get('role');
     sendWSMessage({ type: 'setRole', role });
+
+    // Send initial clock synchronization request
+    sendWSMessage({
+      type: 'timeSync',
+      payload: {
+        clientTime: Date.now()
+      }
+    });
   };
 
   ws.onmessage = async (event) => {
@@ -87,12 +107,34 @@ async function connect() {
       if (message.type === 'syncState') {
         const { role = 'follower' } = await chrome.storage.local.get('role');
         if (role === 'follower') {
-          await handleFollowerSync(message.payload, wsReceivedAt);
+          // Calculate exact or estimated transmission latency to adjust the playback time origin
+          let adjustedReceivedAt = wsReceivedAt;
+          if (message.payload.sentAt) {
+            if (hasSyncedTime) {
+              const followerArrivalServerTime = wsReceivedAt + serverTimeOffset;
+              const transitDelayMs = Math.max(0, followerArrivalServerTime - message.payload.sentAt);
+              adjustedReceivedAt = wsReceivedAt - transitDelayMs;
+              console.log(`Clock Synced Transit Latency: ${transitDelayMs}ms`);
+            } else {
+              const transitDelayMs = 50; // Fallback estimate (50ms)
+              adjustedReceivedAt = wsReceivedAt - transitDelayMs;
+            }
+          }
+          await handleFollowerSync(message.payload, adjustedReceivedAt);
         }
       } else if (message.type === 'roleDemoted') {
         console.warn('Demoted to follower by server');
         await chrome.storage.local.set({ role: 'follower' });
         chrome.runtime.sendMessage({ type: 'roleChanged', role: 'follower' }).catch(() => { });
+      } else if (message.type === 'timeSyncResponse') {
+        const t0 = message.payload.clientTime;
+        const t1 = message.payload.serverTime;
+        const t2 = Date.now();
+        const rtt = t2 - t0;
+        // offset = estimatedServerTime - clientTime
+        serverTimeOffset = (t1 + rtt / 2) - t2;
+        hasSyncedTime = true;
+        console.log(`Time synced. RTT: ${rtt}ms. Server offset: ${serverTimeOffset}ms`);
       }
     } catch (err) {
       console.error('Error handling WebSocket message:', err);
@@ -102,6 +144,7 @@ async function connect() {
   ws.onclose = () => {
     console.log('WebSocket closed');
     setConnectionStatus('disconnected');
+    hasSyncedTime = false; // Reset clock synchronization status
     stopHeartbeat();
     scheduleReconnect();
   };
@@ -273,9 +316,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Only forward state update if we are indeed the host
     chrome.storage.local.get(['enabled', 'role']).then(({ enabled = false, role = 'follower' }) => {
       if (enabled && role === 'host') {
+        const payload = message.payload;
+        // Adjust timestamp to Server Time if clock sync is active
+        if (hasSyncedTime) {
+          payload.sentAt = Date.now() + serverTimeOffset;
+        } else {
+          payload.sentAt = Date.now();
+        }
         sendWSMessage({
           type: 'updateState',
-          payload: message.payload
+          payload: payload
         });
       }
     });

@@ -197,10 +197,9 @@ if (shouldInitialize) {
       let targetTime = currentTime;
       if (state === 'playing') {
         if (wsReceivedAt) {
-          // Calculate delay relative to local receipt time to avoid cross-device clock skew
+          // Calculate delay relative to local receipt time (which already includes network transit)
           const localDelay = (Date.now() - wsReceivedAt) / 1000;
-          const estimatedNetworkTransit = 0.05; // 50ms fallback transit estimate
-          targetTime += estimatedNetworkTransit + localDelay;
+          targetTime += localDelay;
         } else {
           // Fallback to cross-device absolute clock difference if wsReceivedAt is unavailable
           const referenceTime = sentAt || updatedAt;

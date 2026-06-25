@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "minimum_chrome_version": "116",
   "name": "YouTube Sync",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Synchronize YouTube playback and navigation between clients.",
   "permissions": [
     "storage",
