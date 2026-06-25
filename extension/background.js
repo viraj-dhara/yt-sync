@@ -1,9 +1,17 @@
 // MARK: - State & Configurations
 const SERVER_URL = 'ws://yt-sync.viraj-homelab.online';
+
+const CONFIG = {
+  HEARTBEAT_INTERVAL: 20000,      // Interval (ms) to send time sync / ping to server
+  RECONNECT_DELAY_INITIAL: 1000,  // Starting delay (ms) for WebSocket reconnect attempts
+  RECONNECT_DELAY_MAX: 10000,     // Cap (ms) on the reconnect exponential backoff
+  DEFAULT_TRANSIT_ESTIMATE: 50    // Default network latency (ms) when NTP clock sync is unavailable
+};
+
 let ws = null;
 let connectionStatus = 'disconnected';
 let reconnectTimeout = null;
-let reconnectDelay = 1000;
+let reconnectDelay = CONFIG.RECONNECT_DELAY_INITIAL;
 let heartbeatInterval = null;
 
 // Track follower's sync tab ID
@@ -50,7 +58,7 @@ function startHeartbeat() {
       // Send ping for backward compatibility with older servers
       sendWSMessage({ type: 'ping' });
     }
-  }, 20000); // Send ping every 20 seconds to keep MV3 Service Worker active
+  }, CONFIG.HEARTBEAT_INTERVAL); // Keep MV3 Service Worker active
 }
 
 function stopHeartbeat() {
@@ -82,7 +90,7 @@ async function connect() {
   ws.onopen = async () => {
     console.log('WebSocket connected');
     setConnectionStatus('connected');
-    reconnectDelay = 1000;
+    reconnectDelay = CONFIG.RECONNECT_DELAY_INITIAL;
     startHeartbeat();
 
     // Send role registration immediately
@@ -116,7 +124,7 @@ async function connect() {
               adjustedReceivedAt = wsReceivedAt - transitDelayMs;
               console.log(`Clock Synced Transit Latency: ${transitDelayMs}ms`);
             } else {
-              const transitDelayMs = 50; // Fallback estimate (50ms)
+              const transitDelayMs = CONFIG.DEFAULT_TRANSIT_ESTIMATE; // Fallback estimate
               adjustedReceivedAt = wsReceivedAt - transitDelayMs;
             }
           }
@@ -162,8 +170,8 @@ async function scheduleReconnect() {
 
   if (reconnectTimeout) clearTimeout(reconnectTimeout);
 
-  // Cap exponential backoff at 10 seconds
-  reconnectDelay = Math.min(reconnectDelay * 2, 10000);
+  // Cap exponential backoff at maximum config value
+  reconnectDelay = Math.min(reconnectDelay * 2, CONFIG.RECONNECT_DELAY_MAX);
   console.log(`Reconnecting in ${reconnectDelay}ms...`);
 
   reconnectTimeout = setTimeout(() => {

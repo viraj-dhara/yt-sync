@@ -1,4 +1,5 @@
 // MARK: - Injection Guard
+
 // Injection Guard: Check if the content script is already loaded and active.
 // When an extension is reloaded or updated, the previous extension context is invalidated.
 // Standard content script files still exist on the tab, but attempting to communicate via chrome.runtime throws errors.
@@ -27,6 +28,15 @@ if (shouldInitialize) {
   };
   (async () => {
     console.log('YouTube Sync content script loaded.');
+
+    // MARK: - Timing & Synchronization Configs
+    const CONFIG = {
+      DOM_POLL_INTERVAL: 150,        // Interval (ms) to check for video elements & sync Follower state
+      HOST_BROADCAST_INTERVAL: 500,  // Interval (ms) to send periodic sync updates as Host
+      THROTTLE_THRESHOLD: 150,       // Minimum duration (ms) between consecutive periodic Host updates
+      DRIFT_THRESHOLD: 0.15,         // Acceptable playhead difference (s) before forcing a seek on Follower
+      KEEP_ALIVE_INTERVAL: 1000     // Interval (ms) to ping background page for keep-alive
+    };
 
     // MARK: - State Variables
     let videoElement = null;
@@ -88,8 +98,8 @@ if (shouldInitialize) {
       const currentState = video.paused ? 'paused' : 'playing';
       const currentTime = video.currentTime;
 
-      // Throttle periodic updates to once per 900ms (nearly 1s) to prevent redundant packets
-      if (trigger === 'periodic' && (Date.now() - lastSentTimestamp < 900)) {
+      // Throttle periodic updates to once per threshold to prevent redundant packets
+      if (trigger === 'periodic' && (Date.now() - lastSentTimestamp < CONFIG.THROTTLE_THRESHOLD)) {
         return;
       }
 
@@ -136,7 +146,7 @@ if (shouldInitialize) {
           console.error(err);
         }
       }
-    }, 250);
+    }, CONFIG.DOM_POLL_INTERVAL);
 
     // Send periodic sync state if we are the host
     const hostInterval = setInterval(async () => {
@@ -156,7 +166,7 @@ if (shouldInitialize) {
           console.error(err);
         }
       }
-    }, 1000);
+    }, CONFIG.HOST_BROADCAST_INTERVAL);
 
     // MARK: - YouTube Navigation Listeners
     // Listen to custom YouTube navigation events to capture URL transitions
@@ -209,8 +219,8 @@ if (shouldInitialize) {
       }
 
       const drift = Math.abs(video.currentTime - targetTime);
-      // If the local playback is off by more than 0.25 seconds, seek
-      if (drift > 0.5) {
+      // If the local playback is off by more than threshold, seek
+      if (drift > CONFIG.DRIFT_THRESHOLD) {
         console.log(`Syncing time. Drift: ${drift.toFixed(2)}s. Seeking to: ${targetTime.toFixed(2)}s`);
         video.currentTime = targetTime;
       }
@@ -227,6 +237,6 @@ if (shouldInitialize) {
           clearInterval(pingIntervalId);
         }
       });
-    }, 10000);
+    }, CONFIG.KEEP_ALIVE_INTERVAL);
   })();
 }
