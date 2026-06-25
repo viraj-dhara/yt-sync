@@ -215,6 +215,82 @@
       pointer-events: none;
     }
 
+    .follower-notice {
+      margin-top: 12px;
+      padding: 8px;
+      background: rgba(245, 158, 11, 0.1);
+      border: 1px solid rgba(245, 158, 11, 0.2);
+      border-radius: 6px;
+      color: var(--warning-color);
+      font-size: 11px;
+      text-align: center;
+      font-weight: 500;
+      animation: fadeIn 0.3s ease-in-out;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .warning-container {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 4px 0;
+    }
+
+    .warning-icon {
+      font-size: 16px;
+      line-height: 1;
+      animation: pulse 1.5s infinite ease-in-out;
+    }
+
+    .warning-text {
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--text-secondary);
+    }
+
+    .sync-tab-info {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border-color);
+    }
+
+    .sync-tab-title-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+
+    .sync-tab-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 8px;
+    }
+
+    .youtube-icon {
+      flex-shrink: 0;
+    }
+
+    .sync-tab-title {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 200px;
+    }
+
     .footer {
       font-size: 10px;
       text-align: center;
@@ -253,6 +329,25 @@
           <span>Follower</span>
           <span class="role-desc">Follows Host</span>
         </button>
+      </div>
+      <div id="follower-paused-notice" class="follower-notice" style="display: none;">
+        You have paused the video, press play to continue syncing
+      </div>
+    </div>
+
+    <div class="card" id="warning-card" style="display: none;">
+      <div class="warning-container">
+        <span class="warning-icon">⚠️</span>
+        <span class="warning-text" id="warning-text">Please open YouTube.com to start synchronization.</span>
+      </div>
+      <div id="sync-tab-info" class="sync-tab-info" style="display: none;">
+        <div class="sync-tab-title-label">Active Syncing Tab:</div>
+        <div class="sync-tab-row">
+          <svg class="youtube-icon" viewBox="0 0 24 24" width="16" height="16">
+            <path fill="#ef4444" d="M23.498 6.163a3.003 3.003 0 0 0-2.11-2.11C19.518 3.545 12 3.545 12 3.545s-7.518 0-9.388.508a3.003 3.003 0 0 0-2.11 2.11C0 8.033 0 12 0 12s0 3.967.502 5.837a3.003 3.003 0 0 0 2.11 2.11c1.87.508 9.388.508 9.388.508s7.518 0 9.388-.508a3.003 3.003 0 0 0 2.11-2.11C24 15.967 24 12 24 12s0-3.967-.502-5.837zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+          </svg>
+          <span id="sync-tab-title" class="sync-tab-title">YouTube Video Title</span>
+        </div>
       </div>
     </div>
 

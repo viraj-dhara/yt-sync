@@ -48,6 +48,8 @@ if (shouldInitialize) {
     let lastHostStatePayload = null;
     let lastSentTimestamp = 0;
     let lastHostStateWsReceivedAt = 0;
+    let isLocalFollowerPaused = false;
+    let isProgrammaticAction = false;
 
     // MARK: - DOM Elements & Event Setups
     // Find the video element on the page
@@ -82,7 +84,27 @@ if (shouldInitialize) {
     async function handleVideoEvent(e) {
       try {
         const { role = 'follower' } = await chrome.storage.local.get('role');
-        if (role !== 'host') return;
+        if (role !== 'host') {
+          // If we are a follower, capture user play/pause clicks to manage local override
+          if (e && (e.type === 'play' || e.type === 'pause')) {
+            if (isProgrammaticAction) {
+              isProgrammaticAction = false;
+              return;
+            }
+            if (e.type === 'pause') {
+              isLocalFollowerPaused = true;
+              console.log('Follower locally paused playback.');
+            } else if (e.type === 'play') {
+              isLocalFollowerPaused = false;
+              console.log('Follower locally resumed playback, re-syncing...');
+              // Immediately sync back to the last known host state
+              if (lastHostStatePayload) {
+                applyFollowerSync(lastHostStatePayload, lastHostStateWsReceivedAt);
+              }
+            }
+          }
+          return;
+        }
 
         sendHostState(e ? e.type : 'periodic');
       } catch (err) {
@@ -128,13 +150,22 @@ if (shouldInitialize) {
         return;
       }
       try {
+        // Check if this tab is actively syncing and update title accordingly
+        const response = await chrome.runtime.sendMessage({ type: 'checkIsSyncingTab' }).catch(() => null);
+        const syncActive = response ? response.isSyncing : false;
+
+        const { role = 'follower' } = await chrome.storage.local.get('role');
+        if (role === 'host') {
+          isLocalFollowerPaused = false;
+        }
+        updateTabTitle(syncActive);
+
         const video = findVideoElement();
         if (video) {
           if (!video.hasSyncListeners) {
             setupEventListeners();
             video.hasSyncListeners = true;
           }
-          const { role = 'follower' } = await chrome.storage.local.get('role');
           if (role === 'follower' && lastHostStatePayload) {
             applyFollowerSync(lastHostStatePayload, lastHostStateWsReceivedAt);
           }
@@ -170,13 +201,13 @@ if (shouldInitialize) {
 
     // MARK: - YouTube Navigation Listeners
     // Listen to custom YouTube navigation events to capture URL transitions
-    document.addEventListener('yt-navigate-finish', () => {
+    function handleNavigationEvent() {
       handleVideoEvent({ type: 'navigate' });
-    });
+    }
+    document.addEventListener('yt-navigate-finish', handleNavigationEvent);
 
 
     // MARK: - Extension Message Receivers
-
     // Listen to sync messages from the background service worker (for Followers)
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.type === 'syncPlayback') {
@@ -184,6 +215,11 @@ if (shouldInitialize) {
         lastHostStateWsReceivedAt = message.wsReceivedAt;
         applyFollowerSync(message.payload, message.wsReceivedAt);
         sendResponse({ ack: true });
+      } else if (message.type === 'teardown') {
+        teardown();
+        sendResponse({ ack: true });
+      } else if (message.type === 'getIsLocallyPaused') {
+        sendResponse({ isLocallyPaused: isLocalFollowerPaused });
       }
       return true;
     });
@@ -196,11 +232,26 @@ if (shouldInitialize) {
 
       const { state, currentTime, sentAt, updatedAt } = payload;
 
+      // If the Follower has locally paused, and the Host is playing, do not enforce the playback state or seek
+      if (isLocalFollowerPaused && state === 'playing') {
+        return;
+      }
+
       // 1. Sync play/pause state
       if (state === 'playing' && video.paused) {
-        video.play().catch((e) => console.log('Playback start prevented:', e));
+        isProgrammaticAction = true;
+        video.play()
+          .then(() => {
+            setTimeout(() => { isProgrammaticAction = false; }, 150);
+          })
+          .catch((e) => {
+            isProgrammaticAction = false;
+            console.log('Playback start prevented:', e);
+          });
       } else if (state === 'paused' && !video.paused) {
+        isProgrammaticAction = true;
         video.pause();
+        setTimeout(() => { isProgrammaticAction = false; }, 150);
       }
 
       // 2. Sync elapsed time (accounting for latency/drift)
@@ -224,6 +275,72 @@ if (shouldInitialize) {
         console.log(`Syncing time. Drift: ${drift.toFixed(2)}s. Seeking to: ${targetTime.toFixed(2)}s`);
         video.currentTime = targetTime;
       }
+    }
+
+    // MARK: - Teardown and Title Management
+    function updateTabTitle(syncActive) {
+      try {
+        const syncingPrefix = "SYNCING - ";
+        const pausedPrefix = "PAUSED - ";
+        const hasSyncing = document.title.startsWith(syncingPrefix);
+        const hasPaused = document.title.startsWith(pausedPrefix);
+
+        if (syncActive) {
+          if (isLocalFollowerPaused) {
+            // Should be "PAUSED - "
+            if (hasSyncing) {
+              document.title = pausedPrefix + document.title.substring(syncingPrefix.length);
+            } else if (!hasPaused) {
+              document.title = pausedPrefix + document.title;
+            }
+          } else {
+            // Should be "SYNCING - "
+            if (hasPaused) {
+              document.title = syncingPrefix + document.title.substring(pausedPrefix.length);
+            } else if (!hasSyncing) {
+              document.title = syncingPrefix + document.title;
+            }
+          }
+        } else {
+          // Remove prefixes
+          if (hasSyncing) {
+            document.title = document.title.substring(syncingPrefix.length);
+          } else if (hasPaused) {
+            document.title = document.title.substring(pausedPrefix.length);
+          }
+        }
+      } catch (e) {
+        // Suppress extension context errors
+      }
+    }
+
+    function teardown() {
+      console.log('Teardown YouTube Sync content script...');
+      
+      // Clear intervals
+      if (checkInterval) clearInterval(checkInterval);
+      if (hostInterval) clearInterval(hostInterval);
+      if (pingIntervalId) clearInterval(pingIntervalId);
+
+      // Remove video event listeners
+      if (videoElement) {
+        videoElement.removeEventListener('play', handleVideoEvent);
+        videoElement.removeEventListener('pause', handleVideoEvent);
+        videoElement.removeEventListener('seeked', handleVideoEvent);
+        videoElement.hasSyncListeners = false;
+      }
+
+      // Remove document navigation listener
+      document.removeEventListener('yt-navigate-finish', handleNavigationEvent);
+
+      // Restore title
+      isLocalFollowerPaused = false;
+      isProgrammaticAction = false;
+      updateTabTitle(false);
+
+      // Mark as unloaded so a future injection can re-initialize
+      window.hasYouTubeSyncLoaded = false;
+      window.checkYouTubeSyncContext = null;
     }
     // MARK: - Service Worker Keep-Alive Ping
     // Periodically ping the background service worker to keep it alive or trigger reconnection

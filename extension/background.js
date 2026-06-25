@@ -203,23 +203,18 @@ async function handleFollowerSync(payload, wsReceivedAt = null) {
     return;
   }
 
-  // 1. Check if syncTabId still exists
+  // Strictly check if our designated syncTabId still exists
   let targetTab = null;
   if (syncTabId !== null) {
     try {
       targetTab = await chrome.tabs.get(syncTabId);
     } catch (e) {
-      syncTabId = null; // Tab was closed
+      syncTabId = null; // Tab was closed, let the tab listener handle turning it OFF
+      return;
     }
-  }
-
-  // 2. If no valid syncTabId, try to find any existing YouTube tab //MARK: Change behaviour to click-only, not automatic
-  if (!targetTab) {
-    const ytTabs = await chrome.tabs.query({ url: '*://*.youtube.com/*' });
-    if (ytTabs.length > 0) {
-      targetTab = ytTabs[0];
-      syncTabId = targetTab.id;
-    }
+  } else {
+    // No registered sync tab, do not automatically create one or search
+    return;
   }
 
   // Extract video IDs to see if they are different
@@ -234,12 +229,7 @@ async function handleFollowerSync(payload, wsReceivedAt = null) {
   const targetVid = getVidId(currentUrl);
   const currentVid = targetTab ? getVidId(targetTab.url) : null;
 
-  if (!targetTab) {
-    // Create new dedicated sync tab
-    console.log('Creating new YouTube sync tab for:', currentUrl);
-    const newTab = await chrome.tabs.create({ url: currentUrl });
-    syncTabId = newTab.id;
-  } else if (targetVid && targetVid !== currentVid) {
+  if (targetVid && targetVid !== currentVid) {
     // Navigate existing tab to new video URL
     console.log('Navigating tab', syncTabId, 'to', currentUrl);
     await chrome.tabs.update(syncTabId, { url: currentUrl });
@@ -283,6 +273,24 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   }
 });
 
+// Listen for syncing tab closure to automatically turn sync OFF
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+  if (tabId === syncTabId) {
+    console.log('Syncing tab was closed. Turning synchronization OFF.');
+    chrome.storage.local.set({ enabled: false });
+
+    // Tear down WebSocket connection
+    if (ws) {
+      try {
+        ws.close();
+      } catch (e) {}
+    }
+    setConnectionStatus('disconnected');
+    hasSyncedTime = false;
+    syncTabId = null;
+  }
+});
+
 
 // MARK: - Extension Message Listeners
 
@@ -310,6 +318,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         } catch (e) { }
       }
       setConnectionStatus('disconnected');
+      hasSyncedTime = false;
+
+      // Clean up content script on all YouTube tabs
+      chrome.tabs.query({ url: '*://*.youtube.com/*' }).then((ytTabs) => {
+        for (const tab of ytTabs) {
+          chrome.tabs.sendMessage(tab.id, { type: 'teardown' }).catch(() => {});
+        }
+      });
+      syncTabId = null;
     }
     sendResponse({ ack: true });
   } else if (message.type === 'registerSyncTab') {
@@ -338,6 +355,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
     });
     sendResponse({ ack: true });
+  } else if (message.type === 'getSyncTabInfo') {
+    (async () => {
+      if (syncTabId !== null) {
+        try {
+          const tab = await chrome.tabs.get(syncTabId);
+          // Ask the content script if it is locally paused
+          let isLocallyPaused = false;
+          try {
+            const response = await chrome.tabs.sendMessage(syncTabId, { type: 'getIsLocallyPaused' });
+            isLocallyPaused = response ? response.isLocallyPaused : false;
+          } catch (err) {
+            // Content script not loaded/responding
+          }
+          sendResponse({ id: syncTabId, title: tab.title, isLocallyPaused });
+          return;
+        } catch (e) {
+          syncTabId = null;
+        }
+      }
+      sendResponse({ id: null });
+    })();
+    return true;
+  } else if (message.type === 'checkIsSyncingTab') {
+    chrome.storage.local.get('enabled').then(({ enabled = false }) => {
+      const isSyncing = enabled && sender.tab && (sender.tab.id === syncTabId);
+      sendResponse({ isSyncing });
+    });
+    return true;
   }
   return true; // Keep channel open for async response
 });

@@ -60,7 +60,7 @@ The following table catalogs the core functions across the extension code. In th
 | `background.js` | `connect()` | *None* | Establishes the WebSocket connection to the server if synchronization is enabled, and registers the current role. |
 | `background.js` | `setConnectionStatus(status)` | `status` (string) | Updates the local connection state variable and broadcasts a `statusUpdate` message to any open popup. |
 | `background.js` | `sendWSMessage(data)` | `data` (object) | Encodes and sends a JSON message over the active WebSocket channel if it is open. |
-| `background.js` | `handleFollowerSync(payload)` | `payload` (object) | Validates YouTube URLs, resolves the current sync tab (creates or updates it), and forwards playback payloads to the page context. |
+| `background.js` | `handleFollowerSync(payload)` | `payload` (object) | Validates YouTube URLs, resolves the current sync tab (navigates or updates it), and forwards playback payloads to the page context. |
 | `background.js` | `scheduleReconnect()` | *None* | Triggers exponential backoff reconnection logic (capped at 10s delay) when the WebSocket unexpectedly disconnects. |
 | `background.js` | `startHeartbeat()` / `stopHeartbeat()` | *None* | Sets up/clears a 20-second interval timer that sends `ping` packets to prevent service worker idling. |
 | `content.js` | `findVideoElement()` | *None* | Queries the YouTube DOM for the `<video>` player. Cache-stores it and registers DOM event listeners. |
@@ -84,8 +84,10 @@ Event listeners drive the reactive nature of the extension. Below is the list of
     *   **In `popup.js`**: Listens for connection state updates (`statusUpdate`) pushed from the background script to refresh the UI.
 *   `chrome.tabs.onUpdated.addListener`
     *   **In `background.js`**: Detects when the Follower's synced tab finishes reloading or navigates (`changeInfo.status === 'complete'`). It then programmatically injects `content.js` back into the tab since no static scripts are declared in `manifest.json`.
+*   `chrome.tabs.onRemoved.addListener`
+    *   **In `background.js`**: Listens for the syncing tab being closed. Immediately turns synchronization OFF, terminates the WebSocket connection, and resets active state globally.
 *   `DOMContentLoaded`
-    *   **In `popup.js`**: Triggered when the popup UI is opened. Loads settings from `chrome.storage.local`, updates UI buttons, queries the active tab to inject scripts, and checks connection health.
+    *   **In `popup.js`**: Triggered when the popup UI is opened. Loads settings from `chrome.storage.local`, updates UI buttons, queries the active tab to show alerts/warning notice on non-YouTube tabs, and checks connection health.
 
 ### 2. DOM & Video Element Event Listeners (Host Mode)
 *   `video.addEventListener('play')` & `video.addEventListener('pause')`

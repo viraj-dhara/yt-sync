@@ -14,19 +14,42 @@ document.addEventListener('DOMContentLoaded', async () => {
   updateRoleUI(role);
   updateToggleUI(enabled);
 
-  // Initialize active tab synchronization ONLY if enabled
-  if (enabled) {
+  // Get active tab info to check if it's YouTube
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const isYouTube = tab && tab.url && tab.url.includes('youtube.com');
+  const warningCard = document.getElementById('warning-card');
+
+  if (isYouTube) {
+    // Show normal role card, hide warning
+    roleCard.style.display = 'block';
+    warningCard.style.display = 'none';
+  } else {
+    // Non-YouTube page: hide role card, show warning
+    roleCard.style.display = 'none';
+    warningCard.style.display = 'block';
+
+    // Query background script if there is another tab already syncing
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (tab && tab.url && tab.url.includes('youtube.com')) {
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          files: ['content.js']
-        });
-        await chrome.runtime.sendMessage({ type: 'registerSyncTab', tabId: tab.id });
+      const response = await chrome.runtime.sendMessage({ type: 'getSyncTabInfo' });
+      const warningText = document.getElementById('warning-text');
+      const syncTabInfo = document.getElementById('sync-tab-info');
+      const syncTabTitle = document.getElementById('sync-tab-title');
+
+      if (response && response.id && response.title) {
+        warningText.textContent = "Please open YouTube.com to start synchronization.";
+        syncTabInfo.style.display = "block";
+        
+        let cleanTitle = response.title;
+        if (cleanTitle.startsWith("SYNCING - ")) {
+          cleanTitle = cleanTitle.substring("SYNCING - ".length);
+        }
+        syncTabTitle.textContent = cleanTitle;
+      } else {
+        warningText.textContent = "Please open YouTube.com to start synchronization.";
+        syncTabInfo.style.display = "none";
       }
     } catch (err) {
-      console.error('Failed to initialize active tab synchronization:', err);
+      console.error('Failed to retrieve sync tab info:', err);
     }
   }
 
@@ -47,6 +70,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Handle master toggle switch
   syncToggle.addEventListener('change', async () => {
     const isEnabled = syncToggle.checked;
+
+    // Check if we are on a YouTube tab
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const isYT = activeTab && activeTab.url && activeTab.url.includes('youtube.com');
+
+    if (isEnabled && !isYT) {
+      // Prevent enabling sync from a non-YouTube page
+      syncToggle.checked = false;
+      alert("Please open a youtube.com tab before enabling synchronization.");
+      return;
+    }
+
     await chrome.storage.local.set({ enabled: isEnabled });
     updateToggleUI(isEnabled);
 
@@ -82,6 +117,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type === 'statusUpdate') {
       updateStatusUI(message.status);
+    }
+  });
+
+  // Listen to storage changes to keep popup state synced globally
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === 'local') {
+      if (changes.enabled) {
+        syncToggle.checked = changes.enabled.newValue;
+        updateToggleUI(changes.enabled.newValue);
+      }
+      if (changes.role) {
+        updateRoleUI(changes.role.newValue);
+      }
     }
   });
 
@@ -133,4 +181,31 @@ document.addEventListener('DOMContentLoaded', async () => {
       statusText.textContent = 'Offline';
     }
   }
+
+  // Periodic notice check for local follower pauses
+  async function updateSyncTabNotice() {
+    const followerNotice = document.getElementById('follower-paused-notice');
+    if (!followerNotice) return;
+
+    const { enabled = false, role = 'follower' } = await chrome.storage.local.get(['enabled', 'role']);
+    
+    if (enabled && role === 'follower') {
+      try {
+        const response = await chrome.runtime.sendMessage({ type: 'getSyncTabInfo' });
+        if (response && response.isLocallyPaused) {
+          followerNotice.style.display = 'block';
+        } else {
+          followerNotice.style.display = 'none';
+        }
+      } catch (err) {
+        followerNotice.style.display = 'none';
+      }
+    } else {
+      followerNotice.style.display = 'none';
+    }
+  }
+
+  // Run immediately and poll every 1s while popup is open
+  updateSyncTabNotice();
+  setInterval(updateSyncTabNotice, 1000);
 });
