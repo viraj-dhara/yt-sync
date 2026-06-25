@@ -16,6 +16,7 @@ let heartbeatInterval = null;
 
 // Track follower's sync tab ID
 let syncTabId = null;
+let lastKnownHostUrl = null;
 
 // Clock synchronization offsets (NTP-like algorithm)
 let serverTimeOffset = 0;
@@ -138,6 +139,11 @@ async function connect() {
         console.warn('Demoted to follower by server');
         await chrome.storage.local.set({ role: 'follower' });
         chrome.runtime.sendMessage({ type: 'roleChanged', role: 'follower' }).catch(() => { });
+
+        // Notify the content script on the sync tab to show a demotion toast warning
+        if (syncTabId !== null) {
+          chrome.tabs.sendMessage(syncTabId, { type: 'showDemotionNotification' }).catch(() => {});
+        }
       } else if (message.type === 'timeSyncResponse') {
         const t0 = message.payload.clientTime;
         const t1 = message.payload.serverTime;
@@ -206,6 +212,8 @@ async function handleFollowerSync(payload, wsReceivedAt = null) {
   } catch (e) {
     return;
   }
+
+  lastKnownHostUrl = currentUrl;
 
   // Strictly check if our designated syncTabId still exists
   let targetTab = null;
@@ -288,7 +296,36 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
 });
 
 // Listen for tab updates/loads
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (tabId === syncTabId) {
+    const { enabled = false, role = 'follower' } = await chrome.storage.local.get(['enabled', 'role']);
+    if (enabled && role === 'follower' && lastKnownHostUrl) {
+      const currentUrl = tab.url || changeInfo.url;
+      if (currentUrl) {
+        const isUrlDifferent = (url1, url2) => {
+          try {
+            const u1 = new URL(url1);
+            const u2 = new URL(url2);
+            if (u1.hostname !== u2.hostname) return true;
+            if (u1.pathname !== u2.pathname) return true;
+            if (u1.pathname === '/watch') {
+              return u1.searchParams.get('v') !== u2.searchParams.get('v');
+            }
+            return false;
+          } catch (e) {
+            return false;
+          }
+        };
+
+        if (isUrlDifferent(currentUrl, lastKnownHostUrl)) {
+          console.log(`[YouTube Sync] Follower navigated away to ${currentUrl}. Redirecting back to Host: ${lastKnownHostUrl}`);
+          await chrome.tabs.update(syncTabId, { url: lastKnownHostUrl }).catch(() => {});
+          return;
+        }
+      }
+    }
+  }
+
   if (changeInfo.status === 'complete') {
     handleTabActivationOrUpdate(tabId);
   }

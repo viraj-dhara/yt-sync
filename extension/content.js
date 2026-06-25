@@ -56,6 +56,22 @@ if (shouldInitialize) {
     let urlChangedAt = document.readyState !== 'complete' ? Date.now() : 0;
     let isNavigating = document.readyState !== 'complete';
 
+    // Synchronous role tracking to resolve Follower pause event race condition
+    let currentRole = 'follower';
+    chrome.storage.local.get('role').then(({ role = 'follower' }) => {
+      currentRole = role;
+    });
+
+    function handleStorageChange(changes, areaName) {
+      if (areaName === 'local' && changes.role) {
+        currentRole = changes.role.newValue || 'follower';
+        if (currentRole === 'host') {
+          isLocalFollowerPaused = false;
+        }
+      }
+    }
+    chrome.storage.onChanged.addListener(handleStorageChange);
+
     // MARK: - DOM Elements & Event Setups
     // Find the video element on the page
     function findVideoElement() {
@@ -86,10 +102,9 @@ if (shouldInitialize) {
     // MARK: - Host State Extraction & Reporting
 
     // Check and report state if we are the host
-    async function handleVideoEvent(e) {
+    function handleVideoEvent(e) {
       try {
-        const { role = 'follower' } = await chrome.storage.local.get('role');
-        if (role !== 'host') {
+        if (currentRole !== 'host') {
           // If we are a follower, capture user play/pause clicks to manage local override
           if (e && (e.type === 'play' || e.type === 'pause')) {
             if (isProgrammaticAction) {
@@ -167,8 +182,7 @@ if (shouldInitialize) {
         const response = await chrome.runtime.sendMessage({ type: 'checkIsSyncingTab' }).catch(() => null);
         const syncActive = response ? response.isSyncing : false;
 
-        const { role = 'follower' } = await chrome.storage.local.get('role');
-        if (role === 'host') {
+        if (currentRole === 'host') {
           isLocalFollowerPaused = false;
         }
         updateTabTitle(syncActive);
@@ -179,8 +193,25 @@ if (shouldInitialize) {
             setupEventListeners();
             video.hasSyncListeners = true;
           }
-          if (role === 'follower' && lastHostStatePayload) {
-            applyFollowerSync(lastHostStatePayload, lastHostStateWsReceivedAt);
+          if (currentRole === 'follower' && syncActive) {
+            const isWaitingAfterUrlChange = (Date.now() - urlChangedAt < 2000) || 
+                                            (document.readyState !== 'complete') || 
+                                            (isNavigating && (Date.now() - urlChangedAt < 10000));
+            
+            if (!isWaitingAfterUrlChange) {
+              const isHostActiveAndPlaying = lastHostStatePayload && 
+                                             lastHostStatePayload.state === 'playing' && 
+                                             (Date.now() - lastHostStateWsReceivedAt < 10000);
+              
+              if (!video.paused && !isHostActiveAndPlaying) {
+                console.log('[YouTube Sync] Automatically pausing follower tab: no active playing host.');
+                isProgrammaticAction = true;
+                video.pause();
+                setTimeout(() => { isProgrammaticAction = false; }, 150);
+              } else if (lastHostStatePayload) {
+                applyFollowerSync(lastHostStatePayload, lastHostStateWsReceivedAt);
+              }
+            }
           }
         }
       } catch (err) {
@@ -199,8 +230,7 @@ if (shouldInitialize) {
         return;
       }
       try {
-        const { role = 'follower' } = await chrome.storage.local.get('role');
-        if (role === 'host') {
+        if (currentRole === 'host') {
           sendHostState('periodic');
         }
       } catch (err) {
@@ -254,9 +284,81 @@ if (shouldInitialize) {
         sendResponse({ ack: true });
       } else if (message.type === 'getIsLocallyPaused') {
         sendResponse({ isLocallyPaused: isLocalFollowerPaused });
+      } else if (message.type === 'showDemotionNotification') {
+        showDemotionToast();
+        sendResponse({ ack: true });
       }
       return true;
     });
+
+    // MARK: - User Interface Toast Helpers
+    function showDemotionToast() {
+      // Check if toast already exists
+      let toast = document.getElementById('yt-sync-demotion-toast');
+      if (toast) toast.remove();
+
+      toast = document.createElement('div');
+      toast.id = 'yt-sync-demotion-toast';
+      toast.style.position = 'fixed';
+      toast.style.bottom = '24px';
+      toast.style.right = '24px';
+      toast.style.backgroundColor = '#ef4444';
+      toast.style.color = '#ffffff';
+      toast.style.padding = '12px 20px';
+      toast.style.borderRadius = '8px';
+      toast.style.fontFamily = 'sans-serif';
+      toast.style.fontSize = '14px';
+      toast.style.fontWeight = '600';
+      toast.style.boxShadow = '0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.05)';
+      toast.style.zIndex = '999999';
+      toast.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateY(20px)';
+      toast.style.display = 'flex';
+      toast.style.alignItems = 'center';
+      toast.style.gap = '12px';
+
+      const icon = document.createElement('span');
+      icon.textContent = '⚠️';
+      icon.style.fontSize = '18px';
+      toast.appendChild(icon);
+
+      const text = document.createElement('span');
+      text.textContent = 'Demoted to Follower (another Host connected)';
+      toast.appendChild(text);
+
+      const closeBtn = document.createElement('button');
+      closeBtn.textContent = '✕';
+      closeBtn.style.background = 'none';
+      closeBtn.style.border = 'none';
+      closeBtn.style.color = '#ffffff';
+      closeBtn.style.cursor = 'pointer';
+      closeBtn.style.fontSize = '16px';
+      closeBtn.style.padding = '0 4px';
+      closeBtn.addEventListener('click', () => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        setTimeout(() => toast.remove(), 300);
+      });
+      toast.appendChild(closeBtn);
+
+      document.body.appendChild(toast);
+
+      // Trigger animation
+      setTimeout(() => {
+        toast.style.opacity = '1';
+        toast.style.transform = 'translateY(0)';
+      }, 50);
+
+      // Auto remove after 6 seconds
+      setTimeout(() => {
+        if (document.body.contains(toast)) {
+          toast.style.opacity = '0';
+          toast.style.transform = 'translateY(20px)';
+          setTimeout(() => toast.remove(), 300);
+        }
+      }, 6000);
+    }
 
     // MARK: - Follower Synchronization Logic
     // Apply playback and time synchronization
@@ -374,6 +476,13 @@ if (shouldInitialize) {
       document.removeEventListener('yt-navigate-start', handleNavigationStart);
       document.removeEventListener('yt-navigate-finish', handleNavigationFinish);
       window.removeEventListener('load', handleWindowLoad);
+
+      // Clean up storage listener
+      chrome.storage.onChanged.removeListener(handleStorageChange);
+
+      // Remove any active demotion toast
+      const toast = document.getElementById('yt-sync-demotion-toast');
+      if (toast) toast.remove();
 
       // Restore title
       isLocalFollowerPaused = false;
