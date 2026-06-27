@@ -335,11 +335,21 @@ async function handleFollowerSync(payload, wsReceivedAt = null) {
 }
 
 
-// MARK: - Content Script Auto-Injection & Tab Trackers
+// MARK: - Tab Manager & Port Handlers
 
-// Automatically track the active YouTube tab and inject content.js if sync is enabled.
-// This ensures the current YouTube tab the user is looking at becomes the sync focus
-// and receives content.js injection immediately without needing an ON/OFF toggle cycle.
+async function setSyncTabId(newTabId) {
+  if (syncTabId === newTabId) return;
+  const oldTabId = syncTabId;
+  syncTabId = newTabId;
+  
+  if (oldTabId !== null) {
+    chrome.tabs.sendMessage(oldTabId, { type: 'setActiveSyncTab', isActive: false }).catch(() => {});
+  }
+  if (newTabId !== null) {
+    chrome.tabs.sendMessage(newTabId, { type: 'setActiveSyncTab', isActive: true }).catch(() => {});
+  }
+}
+
 async function handleTabActivationOrUpdate(tabId) {
   try {
     const { enabled = false } = await chrome.storage.local.get('enabled');
@@ -347,17 +357,7 @@ async function handleTabActivationOrUpdate(tabId) {
 
     const tab = await chrome.tabs.get(tabId);
     if (tab && tab.url && tab.url.includes('youtube.com')) {
-      if (syncTabId !== tabId) {
-        console.log(`[YouTube Sync] Switching active sync tab to ${tabId}`);
-        syncTabId = tabId;
-      }
-      console.log(`[YouTube Sync] Auto-injecting content script into YouTube tab ${tabId}...`);
-      await chrome.scripting.executeScript({
-        target: { tabId: tabId },
-        files: ['content.js']
-      }).catch((err) => {
-        console.warn(`[YouTube Sync] Failed to inject content script into tab ${tabId}:`, err.message);
-      });
+      await setSyncTabId(tabId);
     }
   } catch (err) {
     // Suppress tab access errors
@@ -423,28 +423,37 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
     }
     setConnectionStatus('disconnected');
     hasSyncedTime = false;
-    syncTabId = null;
+    setSyncTabId(null);
+  }
+});
+
+// Port Keepalive Handler
+let activePorts = new Set();
+chrome.runtime.onConnect.addListener(async (port) => {
+  if (port.name === 'yt-sync-keepalive') {
+    activePorts.add(port);
+    port.onDisconnect.addListener(() => {
+      activePorts.delete(port);
+    });
+
+    if (connectionStatus === 'disconnected') {
+      const { enabled = false } = await chrome.storage.local.get('enabled');
+      if (enabled) {
+        console.log('[YouTube Sync] Keepalive port connected while WS disconnected. Reconnecting...');
+        connect();
+      }
+    }
   }
 });
 
 
-// MARK: - Extension Message Listeners
+// MARK: - Extension Message Dispatcher
 
-// Listen for messages from popup or content script
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'getConnectionStatus') {
+const messageHandlers = {
+  getConnectionStatus: (message, sender, sendResponse) => {
     sendResponse({ status: connectionStatus });
-  } else if (message.type === 'contentPing') {
-    if (connectionStatus === 'disconnected') {
-      chrome.storage.local.get('enabled').then(({ enabled = false }) => {
-        if (enabled) {
-          console.log('Received ping from active content script. Reconnecting WebSocket...');
-          connect();
-        }
-      });
-    }
-    sendResponse({ ack: true });
-  } else if (message.type === 'toggleEnabled') {
+  },
+  toggleEnabled: (message, sender, sendResponse) => {
     if (message.enabled) {
       connect();
     } else {
@@ -455,7 +464,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           ws.onerror = null;
           ws.onclose = null;
           ws.close();
-        } catch (e) { }
+        } catch (e) {}
       }
       setConnectionStatus('disconnected');
       hasSyncedTime = false;
@@ -466,23 +475,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           chrome.tabs.sendMessage(tab.id, { type: 'teardown' }).catch(() => {});
         }
       });
-      syncTabId = null;
+      setSyncTabId(null);
     }
     sendResponse({ ack: true });
-  } else if (message.type === 'registerSyncTab') {
-    syncTabId = message.tabId;
-    console.log('Registered sync tab ID:', syncTabId);
+  },
+  registerSyncTab: (message, sender, sendResponse) => {
+    setSyncTabId(message.tabId);
     sendResponse({ ack: true });
-  } else if (message.type === 'roleChanged') {
+  },
+  roleChanged: (message, sender, sendResponse) => {
     console.log('Role changed to:', message.role);
     sendWSMessage({ type: 'setRole', role: message.role });
     sendResponse({ ack: true });
-  } else if (message.type === 'hostStateUpdate') {
-    // Only forward state update if we are indeed the host
+  },
+  hostStateUpdate: (message, sender, sendResponse) => {
     chrome.storage.local.get(['enabled', 'role']).then(({ enabled = false, role = 'follower' }) => {
       if (enabled && role === 'host') {
         const payload = message.payload;
-        // Adjust timestamp to Server Time if clock sync is active
         if (hasSyncedTime) {
           payload.sentAt = Date.now() + serverTimeOffset;
         } else {
@@ -495,35 +504,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
     });
     sendResponse({ ack: true });
-  } else if (message.type === 'getSyncTabInfo') {
+  },
+  getSyncTabInfo: (message, sender, sendResponse) => {
     (async () => {
       if (syncTabId !== null) {
         try {
           const tab = await chrome.tabs.get(syncTabId);
-          // Ask the content script if it is locally paused
           let isLocallyPaused = false;
           try {
             const response = await chrome.tabs.sendMessage(syncTabId, { type: 'getIsLocallyPaused' });
             isLocallyPaused = response ? response.isLocallyPaused : false;
-          } catch (err) {
-            // Content script not loaded/responding
-          }
+          } catch (err) {}
           sendResponse({ id: syncTabId, title: tab.title, isLocallyPaused });
           return;
         } catch (e) {
-          syncTabId = null;
+          setSyncTabId(null);
         }
       }
       sendResponse({ id: null });
     })();
-    return true;
-  } else if (message.type === 'checkIsSyncingTab') {
+    return true; // async handler
+  },
+  checkIsSyncingTab: (message, sender, sendResponse) => {
     chrome.storage.local.get('enabled').then(({ enabled = false }) => {
       const isSyncing = enabled && sender.tab && (sender.tab.id === syncTabId);
       sendResponse({ isSyncing });
     });
-    return true;
-  } else if (message.type === 'forceReconnect') {
+    return true; // async handler
+  },
+  forceReconnect: (message, sender, sendResponse) => {
     console.log('Forced reconnect triggered from options page.');
     if (ws) {
       try {
@@ -536,13 +545,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     connect();
     sendResponse({ ack: true });
-  } else if (message.type === 'resetCounters') {
+  },
+  resetCounters: (message, sender, sendResponse) => {
     messagesSentCount = 0;
     messagesReceivedCount = 0;
     lastErrorMessage = '';
     lastMessagePayload = null;
     sendResponse({ ack: true });
-  } else if (message.type === 'getInternalState') {
+  },
+  getInternalState: (message, sender, sendResponse) => {
     sendResponse({
       connectionStatus,
       syncTabId,
@@ -557,5 +568,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
     });
   }
-  return true; // Keep channel open for async response
+};
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  const handler = messageHandlers[message.type];
+  if (handler) {
+    const isAsync = handler(message, sender, sendResponse);
+    return isAsync === true;
+  }
+  return false;
 });

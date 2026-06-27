@@ -95,19 +95,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       console.error('Failed to notify toggle change:', err);
     }
 
-    // Auto-inject script immediately if enabled on a YouTube page
+    // Register sync tab ID immediately if enabled on a YouTube page
     if (isEnabled) {
       try {
         const tab = await getActiveTab();
         if (tab && tab.url && tab.url.includes('youtube.com')) {
-          await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            files: ['content.js']
-          });
           await chrome.runtime.sendMessage({ type: 'registerSyncTab', tabId: tab.id });
         }
       } catch (err) {
-        console.error('Failed to auto-inject on toggle enable:', err);
+        console.error('Failed to register sync tab on toggle enable:', err);
       }
     }
   });

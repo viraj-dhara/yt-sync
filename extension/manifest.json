@@ -1,14 +1,12 @@
 {
   "manifest_version": 3,
   "minimum_chrome_version": "116",
-  "name": "YouTube Sync",
-  "version": "0.0.8",
+  "name": "Youtube Sync Minimalist",
+  "version": "0.0.9",
   "description": "Synchronize YouTube playback and navigation between friends.",
   "permissions": [
     "storage",
-    "tabs",
-    "activeTab",
-    "scripting"
+    "tabs"
   ],
   "icons": {
     "16": "icon.png",
@@ -20,6 +18,18 @@
     "service_worker": "background.js",
     "type": "module"
   },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.youtube.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
   "options_ui": {
     "page": "options/options.html",
     "open_in_tab": true

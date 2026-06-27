@@ -1,12 +1,7 @@
-const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 
 const PORT = process.env.PORT || 3000;
-
-const app = express();
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
 
 // Single global state for YouTube sync
 let globalState = {
@@ -19,10 +14,17 @@ let globalState = {
 // Track the current host connection
 let hostSocket = null;
 
-// Basic HTTP health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', hasHost: !!hostSocket, clientsCount: wss.clients.size });
+// Setup HTTP server with a basic health check handler
+const server = http.createServer((req, res) => {
+  if (req.url === '/health' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', hasHost: !!hostSocket, clientsCount: wss.clients.size }));
+  } else {
+    res.writeHead(404);
+    res.end();
+  }
 });
+const wss = new WebSocket.Server({ server });
 
 // Setup heartbeat check to prune dead clients (e.g. from machine sleep)
 const heartbeatInterval = setInterval(() => {

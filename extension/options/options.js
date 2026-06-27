@@ -36,9 +36,18 @@ const diagLastPayload = document.getElementById('diagnostic-last-payload');
 
 // MARK: - Initial Page Setup
 document.addEventListener('DOMContentLoaded', async () => {
+  displayVersion();
   await loadSettings();
   startDiagnosticLoop();
 });
+
+function displayVersion() {
+  const versionElement = document.getElementById('ext-version');
+  if (versionElement && chrome.runtime?.getManifest) {
+    const manifest = chrome.runtime.getManifest();
+    versionElement.textContent = `v${manifest.version}`;
+  }
+}
 
 // Load settings from storage and populate form
 async function loadSettings() {
