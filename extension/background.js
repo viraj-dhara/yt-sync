@@ -1,5 +1,25 @@
+import { getVideoId, isUrlDifferent, isYouTubeUrl } from './modules/utils.js';
+
 // MARK: - State & Configurations
 let SERVER_URL = 'ws://yt-sync.viraj-homelab.online';
+let lastProgrammaticNavAt = 0;
+
+// Context Menu setup for Picture-in-Picture
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.create({
+    id: 'yt-sync-pip',
+    title: 'Pop out Video (Picture-in-Picture)',
+    contexts: ['all']
+  });
+});
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId === 'yt-sync-pip' && tab?.id) {
+    chrome.tabs.sendMessage(tab.id, {
+      type: 'triggerPiPAtPoint'
+    }).catch(() => {});
+  }
+});
 
 let CONFIG = {
   HEARTBEAT_INTERVAL: 20000,      // Interval (ms) to send time sync / ping to server
@@ -274,53 +294,33 @@ function sendWSMessage(data) {
 
 // MARK: - Follower Synchronization Handler
 
+// MARK: - Follower Synchronization Handler
+
 // Handles Follower tab selection and synchronization
 async function handleFollowerSync(payload, wsReceivedAt = null) {
   const { currentUrl } = payload;
   if (!currentUrl) return;
 
-  // Validate that it's a YouTube URL
-  try {
-    const urlObj = new URL(currentUrl);
-    if (!urlObj.hostname.includes('youtube.com')) return;
-  } catch (e) {
-    return;
-  }
-
   lastKnownHostUrl = currentUrl;
 
-  // Strictly check if our designated syncTabId still exists
+  // Strictly check if designated syncTabId still exists
   let targetTab = null;
   if (syncTabId !== null) {
     try {
       targetTab = await chrome.tabs.get(syncTabId);
     } catch (e) {
-      syncTabId = null; // Tab was closed, let the tab listener handle turning it OFF
+      syncTabId = null;
       return;
     }
   } else {
-    // No registered sync tab, do not automatically create one or search
     return;
   }
 
-  // Extract video IDs to see if they are different
-  const getVidId = (u) => {
-    try {
-      return new URL(u).searchParams.get('v');
-    } catch (e) {
-      return null;
-    }
-  };
-
-  const targetVid = getVidId(currentUrl);
-  const currentVid = targetTab ? getVidId(targetTab.url) : null;
-
-  if (targetVid && targetVid !== currentVid) {
-    // Navigate existing tab to new video URL
-    console.log('Navigating tab', syncTabId, 'to', currentUrl);
-    await chrome.tabs.update(syncTabId, { url: currentUrl });
+  if (isUrlDifferent(targetTab.url, currentUrl)) {
+    console.log('Navigating tab', syncTabId, 'to host URL:', currentUrl);
+    lastProgrammaticNavAt = Date.now();
+    await chrome.tabs.update(syncTabId, { url: currentUrl }).catch(() => {});
   } else {
-    // Video is same, or no video ID, but let's notify the content script to sync playback state
     try {
       await chrome.tabs.sendMessage(syncTabId, {
         type: 'syncPlayback',
@@ -328,7 +328,6 @@ async function handleFollowerSync(payload, wsReceivedAt = null) {
         wsReceivedAt
       });
     } catch (err) {
-      // Content script might not be loaded yet, retry shortly or ignore
       console.log('Could not send message to tab content script:', err.message);
     }
   }
@@ -356,7 +355,7 @@ async function handleTabActivationOrUpdate(tabId) {
     if (!enabled) return;
 
     const tab = await chrome.tabs.get(tabId);
-    if (tab && tab.url && tab.url.includes('youtube.com')) {
+    if (tab && tab.url && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
       await setSyncTabId(tabId);
     }
   } catch (err) {
@@ -374,28 +373,15 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (tabId === syncTabId) {
     const { enabled = false, role = 'follower' } = await chrome.storage.local.get(['enabled', 'role']);
     if (enabled && role === 'follower' && lastKnownHostUrl) {
-      const currentUrl = tab.url || changeInfo.url;
-      if (currentUrl) {
-        const isUrlDifferent = (url1, url2) => {
-          try {
-            const u1 = new URL(url1);
-            const u2 = new URL(url2);
-            if (u1.hostname !== u2.hostname) return true;
-            if (u1.pathname !== u2.pathname) return true;
-            if (u1.pathname === '/watch') {
-              return u1.searchParams.get('v') !== u2.searchParams.get('v');
-            }
-            return false;
-          } catch (e) {
-            return false;
-          }
-        };
+      // Avoid redirect loops if programmatic navigation is in progress
+      if (Date.now() - lastProgrammaticNavAt < 5000) return;
 
-        if (isUrlDifferent(currentUrl, lastKnownHostUrl)) {
-          console.log(`[YouTube Sync] Follower navigated away to ${currentUrl}. Redirecting back to Host: ${lastKnownHostUrl}`);
-          await chrome.tabs.update(syncTabId, { url: lastKnownHostUrl }).catch(() => {});
-          return;
-        }
+      const currentUrl = tab.url || changeInfo.url;
+      if (currentUrl && isUrlDifferent(currentUrl, lastKnownHostUrl)) {
+        console.log(`[YouTube Sync] Follower navigated away to ${currentUrl}. Redirecting back to Host: ${lastKnownHostUrl}`);
+        lastProgrammaticNavAt = Date.now();
+        await chrome.tabs.update(syncTabId, { url: lastKnownHostUrl }).catch(() => {});
+        return;
       }
     }
   }
@@ -469,10 +455,10 @@ const messageHandlers = {
       setConnectionStatus('disconnected');
       hasSyncedTime = false;
 
-      // Clean up content script on all YouTube tabs
-      chrome.tabs.query({ url: '*://*.youtube.com/*' }).then((ytTabs) => {
-        for (const tab of ytTabs) {
-          chrome.tabs.sendMessage(tab.id, { type: 'teardown' }).catch(() => {});
+      // Clean up content script on all video tabs
+      chrome.tabs.query({}).then((tabs) => {
+        for (const tab of tabs) {
+          if (tab.id) chrome.tabs.sendMessage(tab.id, { type: 'teardown' }).catch(() => {});
         }
       });
       setSyncTabId(null);
@@ -481,6 +467,9 @@ const messageHandlers = {
   },
   registerSyncTab: (message, sender, sendResponse) => {
     setSyncTabId(message.tabId);
+    if (chrome.action?.openPopup) {
+      chrome.action.openPopup().catch(() => {});
+    }
     sendResponse({ ack: true });
   },
   roleChanged: (message, sender, sendResponse) => {

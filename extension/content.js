@@ -1,28 +1,17 @@
 // MARK: - Injection Guard
 
-// Injection Guard: Check if the content script is already loaded and active.
-// When an extension is reloaded or updated, the previous extension context is invalidated.
-// Standard content script files still exist on the tab, but attempting to communicate via chrome.runtime throws errors.
-// This guard ensures that we only skip initialization if a fully valid, connected script is already running.
 var shouldInitialize = true;
 if (window.hasYouTubeSyncLoaded) {
   try {
-    // If checkYouTubeSyncContext() throws an error (e.g. "Extension context invalidated"),
-    // it indicates the previous script instance is dead, and we should proceed with re-initializing.
     if (window.checkYouTubeSyncContext && window.checkYouTubeSyncContext()) {
       console.log('YouTube Sync content script already loaded and active.');
       shouldInitialize = false;
     }
-  } catch (e) {
-    // Context invalidated, proceed with initialization
-  }
+  } catch (e) {}
 }
 
 if (shouldInitialize) {
   window.hasYouTubeSyncLoaded = true;
-  // Expose a check function on window. Under a new injection, this function binds to the new context.
-  // When called by a future injection, it will run using the context it was created in,
-  // throwing an error if that context is no longer active.
   window.checkYouTubeSyncContext = () => {
     return !!(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id);
   };
@@ -39,6 +28,50 @@ if (shouldInitialize) {
         document.title = document.title.substring(pausedPrefix.length);
       }
     } catch (e) { }
+
+    // Track right click location for Picture-in-Picture selection
+    let lastRightClickPoint = { x: 0, y: 0 };
+    window.addEventListener('contextmenu', (e) => {
+      lastRightClickPoint = { x: e.clientX, y: e.clientY };
+    }, true);
+
+    // Helper: find video at (x, y) coordinates penetrating transparent overlays
+    function findVideoAtPoint(x, y) {
+      if (document.elementsFromPoint) {
+        const elements = document.elementsFromPoint(x, y);
+        for (const el of elements) {
+          if (el.tagName && el.tagName.toLowerCase() === 'video') return el;
+          const childVideo = el.querySelector && el.querySelector('video');
+          if (childVideo) return childVideo;
+        }
+      }
+      const videos = Array.from(document.querySelectorAll('video'));
+      if (videos.length === 0) return null;
+      if (videos.length === 1) return videos[0];
+      for (const video of videos) {
+        const rect = video.getBoundingClientRect();
+        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+          return video;
+        }
+      }
+      return videos[0];
+    }
+
+    async function requestPictureInPictureForVideo(video) {
+      if (!video) return false;
+      try {
+        if (document.pictureInPictureElement === video) {
+          await document.exitPictureInPicture();
+          return true;
+        } else {
+          await video.requestPictureInPicture();
+          return true;
+        }
+      } catch (err) {
+        console.error('[YouTube Sync] PiP Error:', err);
+        return false;
+      }
+    }
 
     // MARK: - Timing & Synchronization Configs
     const CONFIG = {
@@ -82,6 +115,35 @@ if (shouldInitialize) {
       currentRole = role;
     });
 
+    function isYouTubeHost() {
+      return window.location.hostname.includes('youtube.com');
+    }
+
+    function isAdPlaying() {
+      if (!isYouTubeHost()) return false;
+      return !!(document.querySelector('.ad-showing') || (document.querySelector('.video-ads') && document.querySelector('.video-ads').childElementCount > 0));
+    }
+
+    function checkAndApply720pQuality() {
+      if (!isYouTubeHost()) return;
+      try {
+        const cores = navigator.hardwareConcurrency || 8;
+        const memory = navigator.deviceMemory || 8;
+        const effectiveType = navigator.connection ? navigator.connection.effectiveType : '4g';
+
+        if (cores < 4 || memory < 4 || effectiveType !== '4g') {
+          const moviePlayer = document.getElementById('movie_player') || document.querySelector('.html5-video-player');
+          if (moviePlayer) {
+            if (typeof moviePlayer.setPlaybackQualityRange === 'function') {
+              moviePlayer.setPlaybackQualityRange('hd720', 'hd720');
+            } else if (typeof moviePlayer.setPlaybackQuality === 'function') {
+              moviePlayer.setPlaybackQuality('hd720');
+            }
+          }
+        }
+      } catch (e) {}
+    }
+
     function handleStorageChange(changes, areaName) {
       if (areaName === 'local') {
         if (changes.role) {
@@ -98,7 +160,6 @@ if (shouldInitialize) {
           }
         }
 
-        // Listen to configuration changes and trigger hot reload of intervals
         const configKeys = [
           'domPollInterval',
           'hostBroadcastInterval',
@@ -142,13 +203,10 @@ if (shouldInitialize) {
           console.log('[YouTube Sync] Timing settings changed. Hot-reloading active intervals...');
           startOrRestartIntervals();
         }
-      } catch (err) {
-        // Suppress errors when context invalidated
-      }
+      } catch (err) { }
     }
 
     function startOrRestartIntervals() {
-      // 1. Follower Check Interval
       if (checkInterval) clearInterval(checkInterval);
       checkInterval = setInterval(async () => {
         if (!chrome.runtime?.id) {
@@ -175,7 +233,7 @@ if (shouldInitialize) {
                   lastHostStatePayload.state === 'playing' &&
                   (Date.now() - lastHostStateWsReceivedAt < 10000);
 
-                if (!video.paused && !isHostActiveAndPlaying) {
+                if (!video.paused && !isHostActiveAndPlaying && !isAdPlaying()) {
                   console.log('[YouTube Sync] Automatically pausing follower tab: no active playing host.');
                   video.pause();
                 } else if (lastHostStatePayload) {
@@ -193,7 +251,6 @@ if (shouldInitialize) {
         }
       }, CONFIG.DOM_POLL_INTERVAL);
 
-      // 2. Host Broadcast Interval
       if (hostInterval) clearInterval(hostInterval);
       hostInterval = setInterval(async () => {
         if (!chrome.runtime?.id) {
@@ -214,7 +271,6 @@ if (shouldInitialize) {
       }, CONFIG.HOST_BROADCAST_INTERVAL);
     }
 
-    // Connect persistent keep-alive port
     function connectKeepAlive() {
       if (!isInitialized || !chrome.runtime?.id) return;
       if (keepAlivePort) return;
@@ -232,7 +288,6 @@ if (shouldInitialize) {
       }
     }
 
-    // MutationObserver to watch for video element insertion
     function startObservingVideo() {
       if (videoObserver) return;
       const target = document.querySelector('ytd-player') || document.body;
@@ -256,53 +311,74 @@ if (shouldInitialize) {
       videoObserver.observe(target, { childList: true, subtree: true });
     }
 
-    // Find the video element on the page
     function findVideoElement() {
       if (videoElement && document.body.contains(videoElement)) {
         return videoElement;
       }
-      videoElement = document.querySelector('video');
-      if (videoElement) {
-        setupEventListeners();
+
+      if (isYouTubeHost()) {
+        const miniplayerVideo = document.querySelector('ytd-miniplayer video');
+        if (miniplayerVideo && (!miniplayerVideo.paused || document.querySelector('ytd-miniplayer[active]'))) {
+          videoElement = miniplayerVideo;
+          setupEventListeners();
+          return videoElement;
+        }
+        const shortsVideo = document.querySelector('ytd-reel-video-renderer[is-active] video, ytd-shorts video');
+        if (shortsVideo) {
+          videoElement = shortsVideo;
+          setupEventListeners();
+          return videoElement;
+        }
+        const mainVideo = document.querySelector('.html5-main-video') || document.querySelector('ytd-player video') || document.querySelector('video');
+        if (mainVideo) {
+          videoElement = mainVideo;
+          setupEventListeners();
+          return videoElement;
+        }
+      } else {
+        const genericVideo = document.querySelector('video');
+        if (genericVideo) {
+          videoElement = genericVideo;
+          setupEventListeners();
+          return videoElement;
+        }
       }
-      return videoElement;
+      return null;
     }
 
-    // Setup listeners on the video element
     function setupEventListeners() {
       if (!videoElement) return;
 
-      // Remove any existing listeners first to prevent duplicates
       videoElement.removeEventListener('play', handleVideoEvent);
       videoElement.removeEventListener('pause', handleVideoEvent);
       videoElement.removeEventListener('seeked', handleVideoEvent);
+      videoElement.removeEventListener('ratechange', handleVideoEvent);
 
       videoElement.addEventListener('play', handleVideoEvent);
       videoElement.addEventListener('pause', handleVideoEvent);
       videoElement.addEventListener('seeked', handleVideoEvent);
+      videoElement.addEventListener('ratechange', handleVideoEvent);
     }
 
     // MARK: - Host State Extraction & Reporting
 
     function handleVideoEvent(e) {
       try {
-        if (isApplyingSync) return; // Prevent loopbacks from remote sync events
+        if (isApplyingSync) return;
 
         if (currentRole !== 'host') {
-          // If we are a follower, capture user play/pause clicks to manage local override
           if (e && (e.type === 'play' || e.type === 'pause')) {
             if (e.type === 'pause') {
               const isHostActiveAndPlaying = lastHostStatePayload &&
                 lastHostStatePayload.state === 'playing' &&
                 (Date.now() - lastHostStateWsReceivedAt < 10000);
-              if (isHostActiveAndPlaying) {
+              if (isHostActiveAndPlaying && !isAdPlaying()) {
                 isLocalFollowerPaused = true;
                 console.log('Follower locally paused playback.');
               }
             } else if (e.type === 'play') {
               isLocalFollowerPaused = false;
               console.log('Follower locally resumed playback, re-syncing...');
-              // Immediately sync back to the last known host state
               if (lastHostStatePayload) {
                 applyFollowerSync(lastHostStatePayload, lastHostStateWsReceivedAt);
               }
@@ -312,25 +388,28 @@ if (shouldInitialize) {
         }
 
         sendHostState(e ? e.type : 'periodic');
-      } catch (err) {
-        // Suppress extension context invalidated errors
-      }
+      } catch (err) { }
     }
 
     function sendHostState(trigger = 'periodic') {
+      if (isAdPlaying()) {
+        console.log('[YouTube Sync] Suppressing host state update during ad playback.');
+        return;
+      }
+
       const video = findVideoElement();
       if (!video) return;
 
       const currentUrl = window.location.href;
       const currentState = video.paused ? 'paused' : 'playing';
       const currentTime = video.currentTime;
+      const playbackRate = video.playbackRate || 1.0;
 
-      // Throttle periodic updates to once per threshold to prevent redundant packets
       if (trigger === 'periodic' && (Date.now() - lastSentTimestamp < CONFIG.THROTTLE_THRESHOLD)) {
         return;
       }
 
-      lastSentState = { url: currentUrl, state: currentState, time: currentTime };
+      lastSentState = { url: currentUrl, state: currentState, time: currentTime, playbackRate };
       lastSentTimestamp = Date.now();
 
       chrome.runtime.sendMessage({
@@ -339,6 +418,7 @@ if (shouldInitialize) {
           currentUrl,
           state: currentState,
           currentTime,
+          playbackRate,
           sentAt: lastSentTimestamp
         }
       }).catch((err) => {
@@ -356,12 +436,12 @@ if (shouldInitialize) {
       isNavigating = true;
       urlChangedAt = Date.now();
       currentUrl = window.location.href;
-      console.log('[YouTube Sync] YouTube navigation started. URL:', currentUrl);
+      console.log('[YouTube Sync] Navigation started. URL:', currentUrl);
     }
 
     function handleNavigationFinish() {
       isNavigating = false;
-      console.log('[YouTube Sync] YouTube navigation finished.');
+      console.log('[YouTube Sync] Navigation finished.');
       if (isInitialized) {
         findVideoElement();
         startObservingVideo();
@@ -395,6 +475,12 @@ if (shouldInitialize) {
               applyFollowerSync(lastHostStatePayload, lastHostStateWsReceivedAt);
             }
           }
+        }
+        sendResponse({ ack: true });
+      } else if (message.type === 'triggerPiPAtPoint') {
+        const targetVideo = findVideoAtPoint(lastRightClickPoint.x, lastRightClickPoint.y) || findVideoElement();
+        if (targetVideo) {
+          requestPictureInPictureForVideo(targetVideo);
         }
         sendResponse({ ack: true });
       } else if (message.type === 'teardown') {
@@ -479,23 +565,27 @@ if (shouldInitialize) {
 
     // MARK: - Follower Synchronization Logic
     function applyFollowerSync(payload, wsReceivedAt = null) {
+      if (isAdPlaying()) {
+        console.log('[YouTube Sync] Suppressing follower sync state while ad is playing.');
+        return;
+      }
+
       const video = findVideoElement();
       if (!video) return;
 
-      // Jitter prevention: wait at least 2 seconds and until page loads after URL change/init
+      checkAndApply720pQuality();
+
       const timeSinceUrlChange = Date.now() - urlChangedAt;
       if (timeSinceUrlChange < 2000 || document.readyState !== 'complete' || (isNavigating && timeSinceUrlChange < 10000)) {
         return;
       }
 
-      // Cooldown throttle: do not apply sync mutations more than once per second
       if (Date.now() - lastFollowerSyncedAt < CONFIG.FOLLOWER_SYNC_THROTTLE) {
         return;
       }
 
-      const { state, currentTime, sentAt, updatedAt } = payload;
+      const { state, currentTime, playbackRate, sentAt, updatedAt } = payload;
 
-      // If the Follower has locally paused, and the Host is playing, do not enforce the playback state or seek
       if (isLocalFollowerPaused && state === 'playing') {
         return;
       }
@@ -504,7 +594,14 @@ if (shouldInitialize) {
 
       isApplyingSync = true;
       try {
-        // 1. Sync play/pause state
+        // 1. Sync Playback Speed
+        const targetRate = playbackRate !== undefined ? playbackRate : 1.0;
+        if (Math.abs(video.playbackRate - targetRate) > 0.05) {
+          video.playbackRate = targetRate;
+          didMutate = true;
+        }
+
+        // 2. Sync play/pause state
         if (state === 'playing' && video.paused) {
           didMutate = true;
           video.play().catch((e) => {
@@ -515,15 +612,16 @@ if (shouldInitialize) {
           video.pause();
         }
 
-        // 2. Sync elapsed time (accounting for network latency/drift)
+        // 3. Sync elapsed time (accounting for speed and latency)
         let targetTime = currentTime;
         if (state === 'playing') {
+          const rate = targetRate || 1.0;
           if (wsReceivedAt) {
-            const localDelay = (Date.now() - wsReceivedAt) / 1000;
+            const localDelay = ((Date.now() - wsReceivedAt) / 1000) * rate;
             targetTime += localDelay;
           } else {
             const referenceTime = sentAt || updatedAt;
-            const latencySeconds = referenceTime ? (Date.now() - referenceTime) / 1000 : 0;
+            const latencySeconds = referenceTime ? ((Date.now() - referenceTime) / 1000) * rate : 0;
             targetTime += latencySeconds;
           }
         }
@@ -574,28 +672,26 @@ if (shouldInitialize) {
             document.title = document.title.substring(pausedPrefix.length);
           }
         }
-      } catch (e) {
-        // Suppress extension context errors
-      }
+      } catch (e) { }
     }
 
     async function initialize() {
       if (isInitialized) return;
-      
+
       const { enabled = false } = await chrome.storage.local.get('enabled');
       if (!enabled) return;
-      
+
       isInitialized = true;
       console.log('[YouTube Sync] Initializing active content script state...');
-      
+
       await syncConfigurations(false);
       startOrRestartIntervals();
       connectKeepAlive();
-      
-      // Determine if we are the active sync tab upon init
+      checkAndApply720pQuality();
+
       const response = await chrome.runtime.sendMessage({ type: 'checkIsSyncingTab' }).catch(() => null);
       isActiveSyncTab = response ? response.isSyncing : false;
-      
+
       if (isActiveSyncTab) {
         updateTabTitle(true);
         findVideoElement();
@@ -608,50 +704,43 @@ if (shouldInitialize) {
       isInitialized = false;
       console.log('Teardown YouTube Sync content script...');
 
-      // Disconnect keepalive port
       if (keepAlivePort) {
-        try { keepAlivePort.disconnect(); } catch (e) {}
+        try { keepAlivePort.disconnect(); } catch (e) { }
         keepAlivePort = null;
       }
 
-      // Clear intervals
       if (checkInterval) clearInterval(checkInterval);
       if (hostInterval) clearInterval(hostInterval);
 
-      // Disconnect MutationObserver
       if (videoObserver) {
         videoObserver.disconnect();
         videoObserver = null;
       }
 
-      // Remove video event listeners
       if (videoElement) {
         try {
           videoElement.removeEventListener('play', handleVideoEvent);
           videoElement.removeEventListener('pause', handleVideoEvent);
           videoElement.removeEventListener('seeked', handleVideoEvent);
+          videoElement.removeEventListener('ratechange', handleVideoEvent);
           videoElement.hasSyncListeners = false;
         } catch (e) { }
       }
 
-      // Remove active demotion toast
       try {
         const toast = document.getElementById('yt-sync-demotion-toast');
         if (toast) toast.remove();
       } catch (e) { }
 
-      // Restore title
       isLocalFollowerPaused = false;
       updateTabTitle(false);
     }
 
-    // Register persistence listeners & run initialization
     chrome.storage.onChanged.addListener(handleStorageChange);
     document.addEventListener('yt-navigate-start', handleNavigationStart);
     document.addEventListener('yt-navigate-finish', handleNavigationFinish);
     window.addEventListener('load', handleWindowLoad);
 
-    // Initial check
     initialize();
   })();
 }

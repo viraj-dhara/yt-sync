@@ -8,6 +8,7 @@ let globalState = {
   currentUrl: '',
   state: 'paused', // 'playing' | 'paused'
   currentTime: 0,
+  playbackRate: 1.0,
   updatedAt: Date.now()
 };
 
@@ -92,6 +93,7 @@ wss.on('connection', (ws) => {
               currentUrl: message.payload.currentUrl,
               state: message.payload.state,
               currentTime: message.payload.currentTime,
+              playbackRate: message.payload.playbackRate !== undefined ? message.payload.playbackRate : 1.0,
               sentAt: message.payload.sentAt,
               updatedAt: Date.now()
             };
