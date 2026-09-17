@@ -12,11 +12,17 @@ arc bug where all youtube tabs get synced
 
 activate by hotkey shortcut
 
+ordering for sync packets to prevent jitteriness
+
 autoplay handeling - turn it on/off as appropriate
 
 work on phone/google play?
 
 "switch here" option to switch currently synced tab for both host and follower (different behaviour)
+
+allow to change role before syncing
+
+support for multi-tab syncing workflow?
 
 webrtcRAW + consistent polling at 100ms instead of demand-based
 
