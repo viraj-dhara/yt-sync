@@ -1,8 +1,9 @@
-import { getVideoId, isUrlDifferent, isYouTubeUrl } from './modules/utils.js';
+import { getVideoId, isUrlDifferent, isYouTubeUrl, calculateTrimmedMean } from './modules/utils.js';
 
 // MARK: - State & Configurations
 let SERVER_URL = 'ws://yt-sync.viraj-homelab.online';
 let lastProgrammaticNavAt = 0;
+const serverOffsetSamples = [];
 
 // Context Menu setup for Picture-in-Picture
 chrome.runtime.onInstalled.addListener(() => {
@@ -347,11 +348,19 @@ async function connect() {
         const t0 = message.payload.clientTime;
         const t1 = message.payload.serverTime;
         const t2 = Date.now();
-        const rtt = t2 - t0;
-        // offset = estimatedServerTime - clientTime
-        serverTimeOffset = (t1 + rtt / 2) - t2;
+        const rtt = Math.max(1, t2 - t0);
+        // Instantaneous sample: offset = estimatedServerTime - clientTime
+        const sampleOffset = (t1 + rtt / 2) - t2;
+
+        serverOffsetSamples.push(sampleOffset);
+        if (serverOffsetSamples.length > 8) {
+          serverOffsetSamples.shift();
+        }
+
+        // Apply Cristian's algorithm with trimmed mean outlier filtering
+        serverTimeOffset = calculateTrimmedMean(serverOffsetSamples, 0.2);
         hasSyncedTime = true;
-        console.log(`Time synced. RTT: ${rtt}ms. Server offset: ${serverTimeOffset}ms`);
+        console.log(`Time synced. RTT: ${rtt}ms. Sample: ${sampleOffset.toFixed(1)}ms. Smoothed Offset: ${serverTimeOffset.toFixed(1)}ms (samples: ${serverOffsetSamples.length})`);
       }
     } catch (err) {
       console.error('Error handling WebSocket message:', err);

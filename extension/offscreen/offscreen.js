@@ -252,6 +252,18 @@ async function handleIncomingCandidate(peerId, candidate) {
 
 // MARK: - DataChannel Message Processing & P2P Clock Sync
 
+function calculateTrimmedMean(samples, trimPercent = 0.2) {
+  if (!samples || samples.length === 0) return 0;
+  if (samples.length <= 2) {
+    return samples.reduce((a, b) => a + b, 0) / samples.length;
+  }
+  const sorted = [...samples].sort((a, b) => a - b);
+  const trimCount = Math.floor(sorted.length * trimPercent);
+  const trimmed = sorted.slice(trimCount, sorted.length - trimCount);
+  if (trimmed.length === 0) return sorted[Math.floor(sorted.length / 2)];
+  return trimmed.reduce((a, b) => a + b, 0) / trimmed.length;
+}
+
 function handleDataChannelMessage(peerId, channelName, msg) {
   if (msg.type === 'p2pPing') {
     // Host replies immediately to follower's ping with local timestamp
@@ -260,7 +272,7 @@ function handleDataChannelMessage(peerId, channelName, msg) {
       peerRecord.cmdChannel.send(JSON.stringify({
         type: 'p2pPong',
         clientSendTime: msg.clientSendTime,
-        hostTime: Date.now()
+        hostTime: performance.timeOrigin + performance.now()
       }));
     }
     return;
@@ -270,14 +282,22 @@ function handleDataChannelMessage(peerId, channelName, msg) {
     // Follower calculates RTT and clock offset
     const t0 = msg.clientSendTime;
     const tHost = msg.hostTime;
-    const t1 = Date.now();
+    const t1 = performance.timeOrigin + performance.now();
     const rtt = Math.max(1, t1 - t0);
-    p2pClockOffset = (tHost + rtt / 2) - t1;
-    hasP2PClockSynced = true;
+    const instantaneousOffset = (tHost + rtt / 2) - t1;
 
     const peerRecord = peers.get(peerId);
-    if (peerRecord) peerRecord.p2pRtt = rtt;
-    console.log(`[WebRTC Offscreen] P2P Clock Synced. RTT: ${rtt}ms, ClockOffset: ${p2pClockOffset}ms`);
+    if (peerRecord) {
+      if (!peerRecord.offsetSamples) peerRecord.offsetSamples = [];
+      peerRecord.offsetSamples.push(instantaneousOffset);
+      if (peerRecord.offsetSamples.length > 8) {
+        peerRecord.offsetSamples.shift();
+      }
+      peerRecord.p2pRtt = rtt;
+      p2pClockOffset = calculateTrimmedMean(peerRecord.offsetSamples, 0.2);
+      hasP2PClockSynced = true;
+      console.log(`[WebRTC Offscreen] P2P Clock Synced. RTT: ${rtt.toFixed(1)}ms, Instant: ${instantaneousOffset.toFixed(1)}ms, Smoothed: ${p2pClockOffset.toFixed(1)}ms (samples: ${peerRecord.offsetSamples.length})`);
+    }
     return;
   }
 
@@ -289,25 +309,33 @@ function handleDataChannelMessage(peerId, channelName, msg) {
       payload: msg.payload,
       p2pRtt: peers.get(peerId)?.p2pRtt || 20,
       p2pClockOffset: p2pClockOffset,
-      receivedAt: Date.now()
+      receivedAt: performance.timeOrigin + performance.now()
     });
   }
 }
 
 function startP2PTimeSync(hostId) {
-  // Sync P2P clock periodically every 15s over cmdChannel
+  // Sync P2P clock initially in a rapid burst of 5 pings, then every 15s over cmdChannel
   const sendPing = () => {
     const peerRecord = peers.get(hostId);
     if (peerRecord && peerRecord.cmdChannel && peerRecord.cmdChannel.readyState === 'open') {
       peerRecord.cmdChannel.send(JSON.stringify({
         type: 'p2pPing',
-        clientSendTime: Date.now()
+        clientSendTime: performance.timeOrigin + performance.now()
       }));
     }
   };
 
-  sendPing();
-  setInterval(sendPing, 15000);
+  // Burst 5 pings 200ms apart to quickly fill the rolling window
+  let burstCount = 0;
+  const burstInterval = setInterval(() => {
+    sendPing();
+    burstCount++;
+    if (burstCount >= 5) {
+      clearInterval(burstInterval);
+      setInterval(sendPing, 15000);
+    }
+  }, 200);
 }
 
 // Broadcast outgoing state from Host to all connected followers

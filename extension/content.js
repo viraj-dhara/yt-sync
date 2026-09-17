@@ -807,9 +807,30 @@ if (shouldInitialize) {
       updateTabTitle(false);
     }
 
+    function handleVisibilityChange() {
+      if (document.visibilityState === 'visible' && isInitialized && isActiveSyncTab) {
+        console.log('[YouTube Sync] Tab became visible. Triggering immediate sync re-evaluation...');
+        const video = findVideoElement();
+        if (video) {
+          if (currentRole === 'follower' && lastHostStatePayload) {
+            applyFollowerSync(
+              lastHostStatePayload,
+              lastHostStateWsReceivedAt,
+              false,
+              lastP2PRtt,
+              lastP2PClockOffset
+            );
+          } else if (currentRole === 'host') {
+            sendHostState('visibility');
+          }
+        }
+      }
+    }
+
     chrome.storage.onChanged.addListener(handleStorageChange);
     document.addEventListener('yt-navigate-start', handleNavigationStart);
     document.addEventListener('yt-navigate-finish', handleNavigationFinish);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('load', handleWindowLoad);
 
     initialize();
