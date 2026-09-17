@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "minimum_chrome_version": "116",
   "name": "Youtube Sync Minimalist",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "description": "Synchronize YouTube playback and navigation between friends.",
   "permissions": [
     "storage",
