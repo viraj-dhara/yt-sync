@@ -54,3 +54,17 @@ export function isYouTubeUrl(urlStr) {
     return false;
   }
 }
+
+// Multi-sample outlier filtering (Cristian's algorithm with trimmed mean)
+export function calculateTrimmedMean(samples, trimPercent = 0.2) {
+  if (!samples || samples.length === 0) return 0;
+  if (samples.length <= 2) {
+    return samples.reduce((a, b) => a + b, 0) / samples.length;
+  }
+  const sorted = [...samples].sort((a, b) => a - b);
+  const trimCount = Math.floor(sorted.length * trimPercent);
+  const trimmed = sorted.slice(trimCount, sorted.length - trimCount);
+  if (trimmed.length === 0) return sorted[Math.floor(sorted.length / 2)];
+  return trimmed.reduce((a, b) => a + b, 0) / trimmed.length;
+}
+

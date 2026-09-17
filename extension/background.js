@@ -1,8 +1,9 @@
-import { getVideoId, isUrlDifferent, isYouTubeUrl } from './modules/utils.js';
+import { getVideoId, isUrlDifferent, isYouTubeUrl, calculateTrimmedMean } from './modules/utils.js';
 
 // MARK: - State & Configurations
 let SERVER_URL = 'ws://yt-sync.viraj-homelab.online';
 let lastProgrammaticNavAt = 0;
+const serverOffsetSamples = [];
 
 // Context Menu setup for Picture-in-Picture
 chrome.runtime.onInstalled.addListener(() => {
@@ -97,6 +98,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
 let ws = null;
 let connectionStatus = 'disconnected';
+let webrtcStatus = 'disconnected'; // 'connected' | 'disconnected' | 'failed'
 let reconnectTimeout = null;
 let reconnectDelay = CONFIG.RECONNECT_DELAY_INITIAL;
 let heartbeatInterval = null;
@@ -109,6 +111,55 @@ let lastKnownHostUrl = null;
 let serverTimeOffset = 0;
 let hasSyncedTime = false;
 
+// WebRTC Offscreen Document & Client Tracking
+let myClientId = null;
+let activeHostId = null;
+let offscreenPort = null;
+let creatingOffscreenPromise = null;
+
+async function setupOffscreenDocument() {
+  if (await hasOffscreenDocument()) return;
+
+  if (creatingOffscreenPromise) {
+    await creatingOffscreenPromise;
+    return;
+  }
+
+  creatingOffscreenPromise = chrome.offscreen.createDocument({
+    url: 'offscreen/offscreen.html',
+    reasons: ['WEB_RTC'],
+    justification: 'Manage WebRTC DataChannels for ultra low latency P2P video synchronization'
+  });
+
+  try {
+    await creatingOffscreenPromise;
+  } catch (err) {
+    console.warn('[YouTube Sync] Failed to create offscreen document:', err);
+  } finally {
+    creatingOffscreenPromise = null;
+  }
+}
+
+async function hasOffscreenDocument() {
+  if ('getContexts' in chrome.runtime) {
+    const contexts = await chrome.runtime.getContexts({
+      contextTypes: ['OFFSCREEN_DOCUMENT'],
+      documentUrls: [chrome.runtime.getURL('offscreen/offscreen.html')]
+    });
+    return contexts.length > 0;
+  }
+  return false;
+}
+
+async function closeOffscreenDocument() {
+  if (await hasOffscreenDocument()) {
+    try {
+      await chrome.offscreen.closeDocument();
+    } catch (e) { }
+  }
+  offscreenPort = null;
+  webrtcStatus = 'disconnected';
+}
 
 // MARK: - Initialization
 
@@ -127,7 +178,7 @@ chrome.storage.local.get('enabled').then(({ enabled }) => {
 function setConnectionStatus(status) {
   connectionStatus = status;
   // Notify any open popups of status update
-  chrome.runtime.sendMessage({ type: 'statusUpdate', status }).catch(() => {
+  chrome.runtime.sendMessage({ type: 'statusUpdate', status, webrtcStatus }).catch(() => {
     // Ignore errors when popup is closed
   });
 }
@@ -206,9 +257,69 @@ async function connect() {
       lastMessagePayload = message;
       console.log('WebSocket message received:', message);
 
-      if (message.type === 'syncState') {
+      if (message.type === 'initPeer') {
+        myClientId = message.clientId;
+        activeHostId = message.hostId;
+        console.log(`Assigned Client ID: ${myClientId}, Active Host: ${activeHostId}`);
+        if (offscreenPort) {
+          const { role = 'follower' } = await chrome.storage.local.get('role');
+          offscreenPort.postMessage({
+            type: 'init',
+            clientId: myClientId,
+            role,
+            hostId: activeHostId
+          });
+        }
+      } else if (message.type === 'hostAvailable') {
+        activeHostId = message.hostId;
+        console.log(`Host available for WebRTC pairing: ${activeHostId}`);
+        if (offscreenPort) {
+          offscreenPort.postMessage({
+            type: 'hostAvailable',
+            hostId: activeHostId
+          });
+        }
+      } else if (message.type === 'hostUnavailable') {
+        activeHostId = null;
+        console.log('Host unavailable for WebRTC pairing.');
+        if (offscreenPort) {
+          offscreenPort.postMessage({ type: 'hostUnavailable' });
+        }
+      } else if (message.type === 'signalOffer') {
+        if (offscreenPort) {
+          offscreenPort.postMessage({
+            type: 'signalOffer',
+            fromId: message.fromId,
+            offer: message.offer
+          });
+        }
+      } else if (message.type === 'signalAnswer') {
+        if (offscreenPort) {
+          offscreenPort.postMessage({
+            type: 'signalAnswer',
+            fromId: message.fromId,
+            answer: message.answer
+          });
+        }
+      } else if (message.type === 'signalIceCandidate') {
+        if (offscreenPort) {
+          offscreenPort.postMessage({
+            type: 'signalIceCandidate',
+            fromId: message.fromId,
+            candidate: message.candidate
+          });
+        }
+      } else if (message.type === 'peerDisconnected') {
+        if (offscreenPort) {
+          offscreenPort.postMessage({
+            type: 'peerDisconnected',
+            peerId: message.peerId
+          });
+        }
+      } else if (message.type === 'syncState') {
         const { role = 'follower' } = await chrome.storage.local.get('role');
-        if (role === 'follower') {
+        // Only use WebSocket syncState as fallback when WebRTC is not connected
+        if (role === 'follower' && webrtcStatus !== 'connected') {
           // Calculate exact or estimated transmission latency to adjust the playback time origin
           let adjustedReceivedAt = wsReceivedAt;
           if (message.payload.sentAt) {
@@ -237,11 +348,19 @@ async function connect() {
         const t0 = message.payload.clientTime;
         const t1 = message.payload.serverTime;
         const t2 = Date.now();
-        const rtt = t2 - t0;
-        // offset = estimatedServerTime - clientTime
-        serverTimeOffset = (t1 + rtt / 2) - t2;
+        const rtt = Math.max(1, t2 - t0);
+        // Instantaneous sample: offset = estimatedServerTime - clientTime
+        const sampleOffset = (t1 + rtt / 2) - t2;
+
+        serverOffsetSamples.push(sampleOffset);
+        if (serverOffsetSamples.length > 8) {
+          serverOffsetSamples.shift();
+        }
+
+        // Apply Cristian's algorithm with trimmed mean outlier filtering
+        serverTimeOffset = calculateTrimmedMean(serverOffsetSamples, 0.2);
         hasSyncedTime = true;
-        console.log(`Time synced. RTT: ${rtt}ms. Server offset: ${serverTimeOffset}ms`);
+        console.log(`Time synced. RTT: ${rtt}ms. Sample: ${sampleOffset.toFixed(1)}ms. Smoothed Offset: ${serverTimeOffset.toFixed(1)}ms (samples: ${serverOffsetSamples.length})`);
       }
     } catch (err) {
       console.error('Error handling WebSocket message:', err);
@@ -413,7 +532,7 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
   }
 });
 
-// Port Keepalive Handler
+// Port Keepalive & WebRTC Offscreen Handler
 let activePorts = new Set();
 chrome.runtime.onConnect.addListener(async (port) => {
   if (port.name === 'yt-sync-keepalive') {
@@ -429,6 +548,61 @@ chrome.runtime.onConnect.addListener(async (port) => {
         connect();
       }
     }
+  } else if (port.name === 'webrtc-offscreen') {
+    offscreenPort = port;
+    console.log('[YouTube Sync] WebRTC Offscreen port connected.');
+
+    // Initialize offscreen peer state
+    const { role = 'follower' } = await chrome.storage.local.get('role');
+    offscreenPort.postMessage({
+      type: 'init',
+      clientId: myClientId,
+      role,
+      hostId: activeHostId
+    });
+
+    port.onMessage.addListener(async (msg) => {
+      switch (msg.type) {
+        case 'sendSignal':
+          // Relay signaling message through WebSocket server
+          sendWSMessage({
+            type: msg.signalType,
+            targetId: msg.targetId,
+            offer: msg.offer,
+            answer: msg.answer,
+            candidate: msg.candidate
+          });
+          break;
+
+        case 'webrtcState':
+          console.log(`[YouTube Sync] WebRTC connection state updated: ${msg.state}`);
+          webrtcStatus = msg.state;
+          chrome.runtime.sendMessage({ type: 'statusUpdate', status: connectionStatus, webrtcStatus }).catch(() => {});
+          break;
+
+        case 'followerPlaybackUpdate':
+          // High-speed P2P sync playback packet from host received via WebRTC DataChannel
+          if (syncTabId !== null) {
+            chrome.tabs.sendMessage(syncTabId, {
+              type: 'syncPlayback',
+              payload: msg.payload,
+              p2pRtt: msg.p2pRtt,
+              p2pClockOffset: msg.p2pClockOffset,
+              wsReceivedAt: msg.receivedAt,
+              isWebRTC: true
+            }).catch(() => {});
+          }
+          break;
+
+        default:
+          break;
+      }
+    });
+
+    port.onDisconnect.addListener(() => {
+      console.log('[YouTube Sync] WebRTC Offscreen port disconnected.');
+      offscreenPort = null;
+    });
   }
 });
 
@@ -437,12 +611,14 @@ chrome.runtime.onConnect.addListener(async (port) => {
 
 const messageHandlers = {
   getConnectionStatus: (message, sender, sendResponse) => {
-    sendResponse({ status: connectionStatus });
+    sendResponse({ status: connectionStatus, webrtcStatus });
   },
-  toggleEnabled: (message, sender, sendResponse) => {
+  toggleEnabled: async (message, sender, sendResponse) => {
     if (message.enabled) {
+      await setupOffscreenDocument();
       connect();
     } else {
+      await closeOffscreenDocument();
       if (ws) {
         try {
           ws.onopen = null;
@@ -475,6 +651,9 @@ const messageHandlers = {
   roleChanged: (message, sender, sendResponse) => {
     console.log('Role changed to:', message.role);
     sendWSMessage({ type: 'setRole', role: message.role });
+    if (offscreenPort) {
+      offscreenPort.postMessage({ type: 'roleChanged', role: message.role });
+    }
     sendResponse({ ack: true });
   },
   hostStateUpdate: (message, sender, sendResponse) => {
@@ -486,6 +665,18 @@ const messageHandlers = {
         } else {
           payload.sentAt = Date.now();
         }
+
+        // 1. Primary: Broadcast directly via WebRTC DataChannel (fast or cmd channel)
+        if (offscreenPort && webrtcStatus === 'connected') {
+          const channelType = (message.channel === 'cmd' || payload.state === 'paused' || message.isCommand) ? 'cmd' : 'fast';
+          offscreenPort.postMessage({
+            type: 'broadcastSync',
+            channel: channelType,
+            payload
+          });
+        }
+
+        // 2. Fallback / Complementary: Send to WebSocket server
         sendWSMessage({
           type: 'updateState',
           payload: payload

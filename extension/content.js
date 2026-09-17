@@ -89,6 +89,10 @@ if (shouldInitialize) {
     let videoObserver = null;
 
     let videoElement = null;
+    let sequenceNumber = 0;
+    let lastAppliedSeq = 0;
+    let lastP2PRtt = 0;
+    let lastP2PClockOffset = 0;
     let lastSentState = {
       url: '',
       state: '',
@@ -409,12 +413,18 @@ if (shouldInitialize) {
         return;
       }
 
+      const isCommand = (trigger === 'play' || trigger === 'pause' || trigger === 'seeked' || trigger === 'ratechange' || trigger === 'navigate');
+      sequenceNumber++;
+
       lastSentState = { url: currentUrl, state: currentState, time: currentTime, playbackRate };
       lastSentTimestamp = Date.now();
 
       chrome.runtime.sendMessage({
         type: 'hostStateUpdate',
+        channel: isCommand ? 'cmd' : 'fast',
+        isCommand,
         payload: {
+          seq: sequenceNumber,
           currentUrl,
           state: currentState,
           currentTime,
@@ -460,8 +470,17 @@ if (shouldInitialize) {
       if (message.type === 'syncPlayback') {
         lastHostStatePayload = message.payload;
         lastHostStateWsReceivedAt = message.wsReceivedAt;
+        if (message.p2pRtt) lastP2PRtt = message.p2pRtt;
+        if (message.p2pClockOffset) lastP2PClockOffset = message.p2pClockOffset;
+
         if (isInitialized && isActiveSyncTab) {
-          applyFollowerSync(message.payload, message.wsReceivedAt);
+          applyFollowerSync(
+            message.payload,
+            message.wsReceivedAt,
+            !!message.isWebRTC,
+            message.p2pRtt || lastP2PRtt,
+            message.p2pClockOffset || lastP2PClockOffset
+          );
         }
         sendResponse({ ack: true });
       } else if (message.type === 'setActiveSyncTab') {
@@ -564,7 +583,7 @@ if (shouldInitialize) {
     }
 
     // MARK: - Follower Synchronization Logic
-    function applyFollowerSync(payload, wsReceivedAt = null) {
+    function applyFollowerSync(payload, wsReceivedAt = null, isWebRTC = false, p2pRtt = 0, p2pClockOffset = 0) {
       if (isAdPlaying()) {
         console.log('[YouTube Sync] Suppressing follower sync state while ad is playing.');
         return;
@@ -580,11 +599,21 @@ if (shouldInitialize) {
         return;
       }
 
-      if (Date.now() - lastFollowerSyncedAt < CONFIG.FOLLOWER_SYNC_THROTTLE) {
-        return;
+      const { state, currentTime, playbackRate, sentAt, updatedAt, seq } = payload;
+
+      // Discard out-of-order packets if sequence numbers are provided
+      if (seq !== undefined) {
+        if (seq <= lastAppliedSeq && Math.abs(seq - lastAppliedSeq) < 500) {
+          return;
+        }
+        lastAppliedSeq = seq;
       }
 
-      const { state, currentTime, playbackRate, sentAt, updatedAt } = payload;
+      // Responsive throttling: Allow frequent updates for WebRTC ticks while preventing thrash
+      const minInterval = isWebRTC ? 80 : CONFIG.FOLLOWER_SYNC_THROTTLE;
+      if (Date.now() - lastFollowerSyncedAt < minInterval && state === 'playing') {
+        return;
+      }
 
       if (isLocalFollowerPaused && state === 'playing') {
         return;
@@ -594,9 +623,9 @@ if (shouldInitialize) {
 
       isApplyingSync = true;
       try {
-        // 1. Sync Playback Speed
+        // 1. Sync Playback Speed (if paused or drastically different base rate)
         const targetRate = playbackRate !== undefined ? playbackRate : 1.0;
-        if (Math.abs(video.playbackRate - targetRate) > 0.05) {
+        if (state === 'paused' && Math.abs(video.playbackRate - targetRate) > 0.01) {
           video.playbackRate = targetRate;
           didMutate = true;
         }
@@ -612,11 +641,16 @@ if (shouldInitialize) {
           video.pause();
         }
 
-        // 3. Sync elapsed time (accounting for speed and latency)
+        // 3. Evaluate drift and apply smooth rate steering or hard seek
         let targetTime = currentTime;
         if (state === 'playing') {
           const rate = targetRate || 1.0;
-          if (wsReceivedAt) {
+          if (isWebRTC && p2pRtt > 0) {
+            // Direct P2P RTT compensation
+            const transitSeconds = (p2pRtt / 2000) * rate;
+            const elapsedSinceReceive = wsReceivedAt ? ((Date.now() - wsReceivedAt) / 1000) * rate : 0;
+            targetTime += (transitSeconds + elapsedSinceReceive);
+          } else if (wsReceivedAt) {
             const localDelay = ((Date.now() - wsReceivedAt) / 1000) * rate;
             targetTime += localDelay;
           } else {
@@ -626,11 +660,48 @@ if (shouldInitialize) {
           }
         }
 
-        const drift = Math.abs(video.currentTime - targetTime);
-        if (drift > CONFIG.DRIFT_THRESHOLD) {
-          console.log(`Syncing time. Drift: ${drift.toFixed(2)}s. Seeking to: ${targetTime.toFixed(2)}s`);
-          video.currentTime = targetTime;
-          didMutate = true;
+        const signedDrift = targetTime - video.currentTime; // Positive: follower behind; Negative: follower ahead
+        const absDrift = Math.abs(signedDrift);
+
+        // Define drift bounds:
+        // - Under 0.08s: considered in tight sync; return rate to host target rate
+        // - Between 0.08s and 1.5s while playing: smoothly steer rate by ±3% to ±5%
+        // - Over 1.5s or when paused: hard seek
+        const HARD_SEEK_THRESHOLD = 1.5;
+        const STEER_TOLERANCE = 0.08;
+
+        if (state === 'paused' || absDrift > HARD_SEEK_THRESHOLD) {
+          if (absDrift > (state === 'paused' ? 0.3 : CONFIG.DRIFT_THRESHOLD)) {
+            console.log(`[YouTube Sync] Hard seeking. Drift: ${signedDrift.toFixed(2)}s. Seeking to: ${targetTime.toFixed(2)}s`);
+            video.currentTime = targetTime;
+            didMutate = true;
+          }
+          // Reset playback rate to base target rate
+          if (Math.abs(video.playbackRate - targetRate) > 0.01) {
+            video.playbackRate = targetRate;
+            didMutate = true;
+          }
+        } else if (state === 'playing') {
+          if (absDrift > STEER_TOLERANCE) {
+            // Steer playback rate smoothly:
+            // Follower is behind (signedDrift > 0) -> speed up slightly (+4%)
+            // Follower is ahead (signedDrift < 0) -> slow down slightly (-4%)
+            const steerFactor = signedDrift > 0 ? 1.04 : 0.96;
+            const steeredRate = targetRate * steerFactor;
+
+            if (Math.abs(video.playbackRate - steeredRate) > 0.01) {
+              video.playbackRate = steeredRate;
+              didMutate = true;
+              console.log(`[YouTube Sync] Steering rate to ${steeredRate.toFixed(3)}x to correct drift of ${signedDrift.toFixed(2)}s`);
+            }
+          } else {
+            // Within tolerance, restore exact target rate
+            if (Math.abs(video.playbackRate - targetRate) > 0.01) {
+              video.playbackRate = targetRate;
+              didMutate = true;
+              console.log(`[YouTube Sync] Drift within tolerance (${signedDrift.toFixed(3)}s). Restored rate to ${targetRate}x`);
+            }
+          }
         }
       } finally {
         setTimeout(() => {
@@ -736,9 +807,30 @@ if (shouldInitialize) {
       updateTabTitle(false);
     }
 
+    function handleVisibilityChange() {
+      if (document.visibilityState === 'visible' && isInitialized && isActiveSyncTab) {
+        console.log('[YouTube Sync] Tab became visible. Triggering immediate sync re-evaluation...');
+        const video = findVideoElement();
+        if (video) {
+          if (currentRole === 'follower' && lastHostStatePayload) {
+            applyFollowerSync(
+              lastHostStatePayload,
+              lastHostStateWsReceivedAt,
+              false,
+              lastP2PRtt,
+              lastP2PClockOffset
+            );
+          } else if (currentRole === 'host') {
+            sendHostState('visibility');
+          }
+        }
+      }
+    }
+
     chrome.storage.onChanged.addListener(handleStorageChange);
     document.addEventListener('yt-navigate-start', handleNavigationStart);
     document.addEventListener('yt-navigate-finish', handleNavigationFinish);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('load', handleWindowLoad);
 
     initialize();

@@ -58,7 +58,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     const response = await chrome.runtime.sendMessage({ type: 'getConnectionStatus' });
     if (response && response.status) {
-      updateStatusUI(response.status);
+      updateStatusUI(response.status, response.webrtcStatus);
     }
   } catch (err) {
     console.error('Failed to contact background script:', err);
@@ -124,7 +124,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Listen to status updates from background service worker
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type === 'statusUpdate') {
-      updateStatusUI(message.status);
+      updateStatusUI(message.status, message.webrtcStatus);
     }
   });
 
@@ -176,12 +176,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  function updateStatusUI(status) {
+  function updateStatusUI(status, webrtcStatus = 'disconnected') {
     const isEnabled = syncToggle.checked;
     statusDot.className = 'status-dot';
     if (isEnabled && status === 'connected') {
       statusDot.classList.add('connected');
-      statusText.textContent = 'Online';
+      if (webrtcStatus === 'connected') {
+        statusText.textContent = 'P2P Online';
+      } else {
+        statusText.textContent = 'Relay Online';
+      }
     } else if (isEnabled && status === 'connecting') {
       statusDot.classList.add('connecting');
       statusText.textContent = 'Connecting';

@@ -50,8 +50,18 @@ wss.on('connection', (ws) => {
     ws.isAlive = true;
   });
 
-  // Assign a temporary role as follower until they register
+  // Assign a unique client ID and temporary role
+  ws.clientId = Math.random().toString(36).substring(2, 10);
   ws.role = 'follower';
+  console.log(`Client connected: ${ws.clientId}`);
+
+  // Send the assigned clientId to the connecting peer
+  ws.send(JSON.stringify({
+    type: 'initPeer',
+    clientId: ws.clientId,
+    hasHost: !!hostSocket,
+    hostId: hostSocket ? hostSocket.clientId : null
+  }));
 
   // Send the current global state immediately on connection if there is an active host and the state is fresh
   const isStateFresh = globalState.currentUrl && (Date.now() - globalState.updatedAt < 20000);
@@ -76,18 +86,84 @@ wss.on('connection', (ws) => {
             }
             ws.role = 'host';
             hostSocket = ws;
-            console.log('Host registered');
+            console.log(`Host registered: ${ws.clientId}`);
+
+            // Broadcast hostAvailable to all followers to kick off WebRTC offer/answer
+            const hostNotice = JSON.stringify({
+              type: 'hostAvailable',
+              hostId: ws.clientId
+            });
+            wss.clients.forEach((client) => {
+              if (client !== ws && client.readyState === WebSocket.OPEN) {
+                client.send(hostNotice);
+              }
+            });
           } else {
             ws.role = 'follower';
             if (hostSocket === ws) {
               hostSocket = null;
-              console.log('Host unregistered');
+              console.log(`Host unregistered: ${ws.clientId}`);
+              // Notify followers that host left
+              const noHostNotice = JSON.stringify({ type: 'hostUnavailable' });
+              wss.clients.forEach((client) => {
+                if (client.readyState === WebSocket.OPEN) {
+                  client.send(noHostNotice);
+                }
+              });
             }
           }
           break;
 
+        // WebRTC Signaling: Offer from follower to host, or vice versa
+        case 'signalOffer': {
+          const target = message.targetId;
+          const offerMsg = JSON.stringify({
+            type: 'signalOffer',
+            fromId: ws.clientId,
+            offer: message.offer
+          });
+          wss.clients.forEach((client) => {
+            if (client.clientId === target && client.readyState === WebSocket.OPEN) {
+              client.send(offerMsg);
+            }
+          });
+          break;
+        }
+
+        // WebRTC Signaling: Answer from peer
+        case 'signalAnswer': {
+          const target = message.targetId;
+          const answerMsg = JSON.stringify({
+            type: 'signalAnswer',
+            fromId: ws.clientId,
+            answer: message.answer
+          });
+          wss.clients.forEach((client) => {
+            if (client.clientId === target && client.readyState === WebSocket.OPEN) {
+              client.send(answerMsg);
+            }
+          });
+          break;
+        }
+
+        // WebRTC Signaling: ICE Candidate exchange
+        case 'signalIceCandidate': {
+          const target = message.targetId;
+          const candMsg = JSON.stringify({
+            type: 'signalIceCandidate',
+            fromId: ws.clientId,
+            candidate: message.candidate
+          });
+          wss.clients.forEach((client) => {
+            if (client.clientId === target && client.readyState === WebSocket.OPEN) {
+              client.send(candMsg);
+            }
+          });
+          break;
+        }
+
         case 'updateState':
-          // Only the registered host can update the global state
+          // Only the registered host can update the global state (used as WebSocket relay fallback)
           if (ws.role === 'host') {
             globalState = {
               currentUrl: message.payload.currentUrl,
@@ -135,11 +211,25 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    console.log('Client disconnected');
+    console.log(`Client disconnected: ${ws.clientId}`);
     if (ws === hostSocket) {
       hostSocket = null;
       console.log('Host disconnected');
       globalState.currentUrl = ''; // Clear stored state URL when host departs
+      const noHostNotice = JSON.stringify({ type: 'hostUnavailable' });
+      wss.clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(noHostNotice);
+        }
+      });
+    } else {
+      // Notify host that a follower peer disconnected
+      if (hostSocket && hostSocket.readyState === WebSocket.OPEN) {
+        hostSocket.send(JSON.stringify({
+          type: 'peerDisconnected',
+          peerId: ws.clientId
+        }));
+      }
     }
   });
 
